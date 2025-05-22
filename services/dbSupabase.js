@@ -5,19 +5,22 @@ const supabaseUrl = 'https://vvgfzkdjsyxfswehnkxb.supabase.co';
 const supabaseKey = process.env.SUPABASE_KEY;
 
 const supabase = createClient(supabaseUrl, supabaseKey);
-async function obtenerProductos() {
-  const { data, error } = await supabase
-    .from('productos')
-    .select('*');
 
-  if (error) {
-    console.error('Error al obtener productos:', error);
-    return;
-  }
-  console.log('Productos:', data);
-}
+export default supabase;
 
-obtenerProductos();
+// async function obtenerProductos() {
+//   const { data, error } = await supabase
+//     .from('productos')
+//     .select('*');
+
+//   if (error) {
+//     console.error('Error al obtener productos:', error);
+//     return;
+//   }
+//   console.log('Productos:', data);
+// }
+
+// obtenerProductos();
 
 // async function testConexion() {
 //   try {
