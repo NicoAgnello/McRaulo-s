@@ -1,21 +1,23 @@
 // index.js
-import express from 'express';
-import burgerRoutes from './routes/burguerRoutes.js';
 import 'dotenv/config';
+import express from 'express';
+import cors from 'cors'
+import productRoutes from './routes/productRoutes.js';
 
 const app = express();
-const port = process.env.PORT || 3000;
-
+const PORT = process.env.PORT || 3000;
+// Middlewares
+app.use(cors())
 app.use(express.json()); // Para interpretar JSON en el body
 
 // Usar rutas
-app.use('/api', burgerRoutes);
+app.use('/api', productRoutes);
 
 // Ruta base
 app.get('/', (req, res) => {
   res.send('API PP1-BURGER funcionando!');
 });
 
-app.listen(port, () => {
-  console.log(`Servidor corriendo en http://localhost:${port}`);
+app.listen(PORT, () => {
+  console.log(`Servidor corriendo en http://localhost:${PORT}`);
 });

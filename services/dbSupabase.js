@@ -1,40 +1,20 @@
-import { createClient } from '@supabase/supabase-js'
-import 'dotenv/config'; // o require('dotenv').config();
+import postgres from 'postgres'
 
-const supabaseUrl = 'https://vvgfzkdjsyxfswehnkxb.supabase.co';
-const supabaseKey = process.env.SUPABASE_KEY;
+// Verificar que la variable de entorno esté cargada
+console.log('DATABASE_URL cargada:', process.env.DATABASE_URL ? 'Sí' : 'No')
 
-const supabase = createClient(supabaseUrl, supabaseKey);
+if (!process.env.DATABASE_URL) {
+  console.error('ERROR: DATABASE_URL no está definida en el archivo .env')
+  console.error('Asegúrate de tener un archivo .env en la raíz del proyecto con DATABASE_URL=tu_conexion_supabase')
+  process.exit(1)
+}
 
-export default supabase;
+// Configuración de conexión a Supabase
+const connectionString = process.env.DATABASE_URL
 
-// async function obtenerProductos() {
-//   const { data, error } = await supabase
-//     .from('productos')
-//     .select('*');
+console.log('Conectando a:', connectionString.replace(/:[^:@]*@/, ':****@')) // Ocultar password en logs
 
-//   if (error) {
-//     console.error('Error al obtener productos:', error);
-//     return;
-//   }
-//   console.log('Productos:', data);
-// }
+const sql = postgres(connectionString)
 
-// obtenerProductos();
 
-// async function testConexion() {
-//   try {
-//     // Probamos una consulta simple para verificar conexión
-//     const { data, error } = await supabase.from('productos').select('id_producto').limit(1);
-
-//     if (error) {
-//       console.error('Error conectando a Supabase:', error.message);
-//       return;
-//     }
-//     console.log('Conexión exitosa a Supabase!');
-//   } catch (err) {
-//     console.error('Error inesperado:', err);
-//   }
-// }
-
-// testConexion();
+export default sql
