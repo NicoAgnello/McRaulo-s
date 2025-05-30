@@ -1,5 +1,26 @@
 import postgres from 'postgres'
 
+// Opciones de configuración para la conexión
+const options = {
+  // Número máximo de conexiones
+  max: 10,
+  // Tiempo de espera para la adquisición de conexiones (en segundos)
+  idle_timeout: 30,
+  // Tiempo de espera para la conexión (en segundos)
+  connect_timeout: 30,
+  // Configuraciones SSL para conexiones seguras
+  ssl: true, // Render.com requiere SSL
+  // Permite verificar si la conexión es válida antes de usarla
+  onnotice: () => {},
+  debug: process.env.NODE_ENV === 'development',
+  // Reintentos de conexión
+  max_lifetime: 60 * 30, // 30 minutos
+  retry_limit: 3,
+  connection: {
+    application_name: 'autoservicio-burgers-api'
+  }
+};
+
 // Verificar que la variable de entorno esté cargada
 console.log('DATABASE_URL cargada:', process.env.DATABASE_URL ? 'Sí' : 'No')
 
@@ -14,7 +35,7 @@ const connectionString = process.env.DATABASE_URL
 
 console.log('Conectando a:', connectionString.replace(/:[^:@]*@/, ':****@')) // Ocultar password en logs
 
-const sql = postgres(connectionString)
+const sql = postgres(connectionString, options)
 
 
 export default sql

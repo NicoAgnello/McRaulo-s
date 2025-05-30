@@ -1,14 +1,25 @@
-// routes/burger.routes.js
+
 import express from 'express';
-import { getProducts } from '../controllers/productController.js';
+import {
+  getProducts,
+  getProductById,
+  createProduct,
+  updateProduct,
+  deleteProduct,
+  calcularPrecioPersonalizado,
+  getProductosPorCategoria  
+} from '../controllers/productController.js'
+
 
 const router = express.Router();
 
-router.get('/productos', getProducts);
+router.get('/productos', getProducts)
+router.get('/productos/:id', getProductById)
+router.post('/productos', createProduct)
+router.put('/productos/:id', updateProduct)
+router.delete('/productos/:id', deleteProduct)
 
-// Podés agregar POST, PUT, DELETE más adelante:
-// router.post('/productos', createBurger);
-// router.put('/productos/:id', updateBurger);
-// router.delete('/productos/:id', deleteBurger);
+router.get('/categoria/:categoria', getProductosPorCategoria)
+router.post('/:id/calcular-precio', calcularPrecioPersonalizado)
 
 export default router;
