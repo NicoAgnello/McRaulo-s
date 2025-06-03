@@ -3,8 +3,8 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors'
 import productRoutes from './routes/productRoutes.js';
-import pedidoRoutes from './routes/pedidoRoutes.js'
-import ingredienteRoutes from './routes/ingredienteRoutes.js'
+import pedidoRoutes from './routes/pedidosRoutes.js'
+import ingredienteRoutes from './routes/ingredientesRoutes.js'
 import categoriaRoutes from './routes/categoriaRoutes.js'
 
 
