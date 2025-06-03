@@ -9,7 +9,7 @@ const options = {
   // Tiempo de espera para la conexión (en segundos)
   connect_timeout: 30,
   // Configuraciones SSL para conexiones seguras
-  ssl: true, // Render.com requiere SSL
+  // ssl: true, // Render.com requiere SSL
   // Permite verificar si la conexión es válida antes de usarla
   onnotice: () => {},
   debug: process.env.NODE_ENV === 'development',
