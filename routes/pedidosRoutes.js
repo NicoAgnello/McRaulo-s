@@ -12,7 +12,8 @@ import {
   filtrarPedidosPorFecha,
   obtenerResumenPedido,
   eliminarProductoDePedido,
-  getPedidosPorMetodoPago 
+  getPedidosPorMetodoPago,
+  getPedidosByCliente 
 } from '../controllers/pedidosController.js'
 
 const router = Router()
@@ -30,5 +31,6 @@ router.get('/filtro/fecha', filtrarPedidosPorFecha)
 router.get('/:id/resumen', obtenerResumenPedido)
 router.delete('/:id/productos/:idProducto', eliminarProductoDePedido)
 router.get('/metodo-pago/:metodo', getPedidosPorMetodoPago)
+router.get('/cliente/:idCliente', getPedidosByCliente)
 
 export default router
