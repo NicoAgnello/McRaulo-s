@@ -1,4 +1,3 @@
-
 import express from 'express';
 import {
   getProducts,
@@ -8,18 +7,21 @@ import {
   deleteProduct,
   calcularPrecioPersonalizado,
   getProductosPorCategoria  
-} from '../controllers/productController.js'
-
+} from '../controllers/productController.js';
 
 const router = express.Router();
 
-router.get('/productos', getProducts)
-router.get('/productos/:id', getProductById)
-router.post('/productos', createProduct)
-router.put('/productos/:id', updateProduct)
-router.delete('/productos/:id', deleteProduct)
+// CRUD de productos
+router.get('/productos', getProducts);
+router.get('/productos/:id', getProductById);
+router.post('/productos', createProduct);
+router.put('/productos/:id', updateProduct);
+router.delete('/productos/:id', deleteProduct);
 
-router.get('/categoria/:categoria', getProductosPorCategoria)
-router.post('/:id/calcular-precio', calcularPrecioPersonalizado)
+// Productos por categoría (usando id_categoria)
+router.get('/productos/categoria/:id_categoria', getProductosPorCategoria);
+
+// Calcular precio personalizado
+router.post('/productos/:id/calcular-precio', calcularPrecioPersonalizado);
 
 export default router;

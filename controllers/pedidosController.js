@@ -193,7 +193,7 @@ export const createPedido = async (req, res) => {
         `
         if (productoInfo.length === 0) throw new Error(`Producto con ID ${producto.id_producto} no existe`)
 
-        let subtotal = productoInfo[0].precio_base
+        let subtotal = parseFloat(productoInfo[0].precio_base)
 
         if (producto.ingredientes_personalizados) {
           for (const ingrediente of producto.ingredientes_personalizados) {
@@ -203,7 +203,7 @@ export const createPedido = async (req, res) => {
                 WHERE id_ingrediente = ${ingrediente.id_ingrediente};
               `
               if (ingredienteInfo.length === 0) throw new Error(`Ingrediente con ID ${ingrediente.id_ingrediente} no existe`)
-              subtotal += ingredienteInfo[0].precio * ingrediente.cantidad
+              subtotal += parseFloat(ingredienteInfo[0].precio) * ingrediente.cantidad
             }
           }
         }
@@ -399,12 +399,17 @@ export const getPedidosByEstado = async (req, res) => {
 export const getProductoDetalleEnPedido = async (req, res) => {
   const { idPedido, idPedidoProducto } = req.params
   try {
-    const producto = await sql`
-      SELECT pp.*, p.nombre, p.descripcion, p.categoria
-      FROM pedidos_productos pp
-      JOIN productos p ON pp.id_producto = p.id_producto
-      WHERE pp.id_pedido = ${idPedido} AND pp.id_pedido_producto = ${idPedidoProducto};
+      const producto = await sql`
+        SELECT pp.*, 
+              p.nombre, 
+              p.descripcion, 
+              c.nombre AS categoria
+        FROM pedidos_productos pp
+        JOIN productos p ON pp.id_producto = p.id_producto
+        LEFT JOIN categoria c ON p.id_categoria = c.id_categoria
+        WHERE pp.id_pedido = ${idPedido} AND pp.id_pedido_producto = ${idPedidoProducto};
     `
+
     if (producto.length === 0) return res.status(404).json({ status: 'ERROR', message: `Producto no encontrado en el pedido` })
 
     const ingredientes = await sql`
@@ -430,43 +435,64 @@ export const getProductoDetalleEnPedido = async (req, res) => {
 // 8. Estadísticas de pedidos
 export const getEstadisticasPedidos = async (req, res) => {
   try {
-    const totalPedidos = await sql`SELECT COUNT(*) as total FROM pedidos;`
-    const pedidosPorEstado = await sql`SELECT estado, COUNT(*) as cantidad FROM pedidos GROUP BY estado;`
+    const totalPedidos = await sql`
+      SELECT COUNT(*) AS total
+      FROM pedidos;
+    `;
+
+    const pedidosPorEstado = await sql`
+      SELECT estado, COUNT(*) AS cantidad
+      FROM pedidos
+      GROUP BY estado;
+    `;
+
     const productosMasVendidos = await sql`
-      SELECT p.id_producto, p.nombre, p.categoria,
-             COUNT(pp.id_pedido_producto) as unidades_vendidas,
-             SUM(pp.subtotal) as ventas_totales
+      SELECT p.id_producto, p.nombre, c.nombre AS categoria,
+             COUNT(pp.id_pedido_producto) AS unidades_vendidas,
+             SUM(pp.subtotal)            AS ventas_totales
       FROM pedidos_productos pp
-      JOIN productos p ON pp.id_producto = p.id_producto
-      GROUP BY p.id_producto, p.nombre, p.categoria
+      JOIN productos p      ON pp.id_producto = p.id_producto
+      LEFT JOIN categoria c ON p.id_categoria = c.id_categoria
+      GROUP BY p.id_producto, p.nombre, c.nombre
       ORDER BY unidades_vendidas DESC
       LIMIT 5;
-    `
+    `;
+
     const ingredientesMasSolicitados = await sql`
       SELECT i.id_ingrediente, i.nombre, i.unidad_medida,
-             SUM(ppi.cantidad) as veces_solicitado
+             SUM(ppi.cantidad) AS veces_solicitado
       FROM pedidos_productos_ingredientes ppi
       JOIN ingredientes i ON ppi.id_ingrediente = i.id_ingrediente
       WHERE ppi.es_extra = TRUE
       GROUP BY i.id_ingrediente, i.nombre, i.unidad_medida
       ORDER BY veces_solicitado DESC
       LIMIT 5;
-    `
+    `;
+
+    // 🔧 Ventas por método de pago (usando compra y metodo_pago)
     const ventasPorMetodoPago = await sql`
-      SELECT metodo_pago, COUNT(*) as cantidad_pedidos, SUM(total) as total_ventas
-      FROM pedidos
-      GROUP BY metodo_pago;
-    `
+      SELECT 
+        mp.id_metodo_pago,
+        mp.nombre        AS metodo_pago,
+        COUNT(*)         AS cantidad_pedidos,
+        SUM(p.total)     AS total_ventas
+      FROM pedidos p
+      JOIN compra c          ON c.id_pedido       = p.id_pedido
+      JOIN metodo_pago mp    ON mp.id_metodo_pago = c.id_metodo_pago
+      GROUP BY mp.id_metodo_pago, mp.nombre;
+    `;
+
     const productosConMasPersonalizaciones = await sql`
-      SELECT p.id_producto, p.nombre, p.categoria,
-             COUNT(ppi.id_pedido_producto) as total_personalizaciones
+      SELECT p.id_producto, p.nombre, c.nombre AS categoria,
+             COUNT(ppi.id_pedido_producto) AS total_personalizaciones
       FROM productos p
+      JOIN categoria c ON p.id_categoria = c.id_categoria
       JOIN pedidos_productos pp ON p.id_producto = pp.id_producto
       JOIN pedidos_productos_ingredientes ppi ON pp.id_pedido_producto = ppi.id_pedido_producto
-      GROUP BY p.id_producto, p.nombre, p.categoria
+      GROUP BY p.id_producto, p.nombre, c.nombre
       ORDER BY total_personalizaciones DESC
       LIMIT 5;
-    `
+    `;
 
     res.json({
       status: 'OK',
@@ -478,11 +504,18 @@ export const getEstadisticasPedidos = async (req, res) => {
         ventas_por_metodo_pago: ventasPorMetodoPago,
         productos_con_mas_personalizaciones: productosConMasPersonalizaciones
       }
-    })
+    });
   } catch (error) {
-    res.status(500).json({ status: 'ERROR', message: 'Error al obtener estadísticas', error: error.message })
+    console.error('Error al obtener estadísticas:', error);
+    res.status(500).json({
+      status: 'ERROR',
+      message: 'Error al obtener estadísticas',
+      error: error.message
+    });
   }
-}
+};
+
+
 
 // 9. Agregar productos a un pedido existente
 // export const agregarProductosAlPedido = async (req, res) => {
@@ -580,87 +613,105 @@ export const getEstadisticasPedidos = async (req, res) => {
 //   }
 // }
 export const agregarProductosAlPedido = async (req, res) => {
-  const { id } = req.params
-  const { productos } = req.body
+  const { id } = req.params;
+  const { productos } = req.body;
 
   if (!productos || !Array.isArray(productos) || productos.length === 0) {
     return res.status(400).json({
       status: 'ERROR',
       message: 'Debe incluir al menos un producto para agregar al pedido'
-    })
+    });
   }
 
   try {
-    const pedidoExistente = await sql`SELECT * FROM pedidos WHERE id_pedido = ${id};`
-    if (pedidoExistente.length === 0)
-      return res.status(404).json({ status: 'ERROR', message: `No se encontró el pedido con ID ${id}` })
+    const pedidoExistente = await sql`
+      SELECT * FROM pedidos WHERE id_pedido = ${id};
+    `;
+    if (pedidoExistente.length === 0) {
+      return res.status(404).json({
+        status: 'ERROR',
+        message: `No se encontró el pedido con ID ${id}`
+      });
+    }
 
-    if (['entregado', 'cancelado'].includes(pedidoExistente[0].estado))
+    if (['entregado', 'cancelado'].includes(pedidoExistente[0].estado)) {
       return res.status(400).json({
         status: 'ERROR',
         message: `No se pueden agregar productos a un pedido en estado "${pedidoExistente[0].estado}"`
-      })
+      });
+    }
 
     return await sql.begin(async (sql) => {
-      let totalAdicional = 0
-      const productosAgregados = []
+      let totalAdicional = 0;
+      const productosAgregados = [];
 
       for (const producto of productos) {
         const productoInfo = await sql`
-          SELECT * FROM productos WHERE id_producto = ${producto.id_producto} AND disponible = TRUE;
-        `
-        if (productoInfo.length === 0)
-          throw new Error(`El producto con ID ${producto.id_producto} no existe o no está disponible`)
+          SELECT * FROM productos
+          WHERE id_producto = ${producto.id_producto}
+            AND disponible = TRUE;
+        `;
+        if (productoInfo.length === 0) {
+          throw new Error(`El producto con ID ${producto.id_producto} no existe o no está disponible`);
+        }
 
-        let subtotal = productoInfo[0].precio_base
+        // parseFloat directamente sobre precio_base
+        let subtotal = parseFloat(productoInfo[0].precio_base);
 
-        if (producto.ingredientes_personalizados) {
-          for (const ingrediente of producto.ingredientes_personalizados) {
+        if (Array.isArray(producto.ingredientes_personalizados)) {
+          for (const ing of producto.ingredientes_personalizados) {
             const ingredienteInfo = await sql`
-              SELECT * FROM ingredientes WHERE id_ingrediente = ${ingrediente.id_ingrediente};
-            `
-            if (ingredienteInfo.length === 0)
-              throw new Error(`El ingrediente con ID ${ingrediente.id_ingrediente} no existe`)
-
-            // Sumamos solo si es extra y cantidad positiva (precio extra)
-            if (ingrediente.cantidad > 0 && ingrediente.es_extra) {
-              subtotal += ingredienteInfo[0].precio * ingrediente.cantidad
+              SELECT * FROM ingredientes
+              WHERE id_ingrediente = ${ing.id_ingrediente};
+            `;
+            if (ingredienteInfo.length === 0) {
+              throw new Error(`El ingrediente con ID ${ing.id_ingrediente} no existe`);
             }
-            // Si cantidad es negativa (remoción), no sumamos nada al subtotal
+
+            if (ing.es_extra && ing.cantidad > 0) {
+              // parseFloat directamente sobre precio de ingrediente
+              const precioIng = parseFloat(ingredienteInfo[0].precio);
+              subtotal += precioIng * ing.cantidad;
+            }
           }
         }
 
-        totalAdicional += subtotal
+        totalAdicional += subtotal;
 
         const nuevoPedidoProducto = await sql`
-          INSERT INTO pedidos_productos (id_pedido, id_producto, subtotal, notas)
-          VALUES (${id}, ${producto.id_producto}, ${subtotal}, ${producto.notas || null})
+          INSERT INTO pedidos_productos
+            (id_pedido, id_producto, subtotal, notas)
+          VALUES
+            (${id}, ${producto.id_producto}, ${subtotal}, ${producto.notas || null})
           RETURNING *;
-        `
+        `;
+        productosAgregados.push(nuevoPedidoProducto[0]);
 
-        productosAgregados.push(nuevoPedidoProducto[0])
-
-        if (producto.ingredientes_personalizados) {
-          for (const ingrediente of producto.ingredientes_personalizados) {
+        if (Array.isArray(producto.ingredientes_personalizados)) {
+          for (const ing of producto.ingredientes_personalizados) {
             await sql`
-              INSERT INTO pedidos_productos_ingredientes (
-                id_pedido_producto, id_ingrediente, cantidad, es_extra
-              )
-              VALUES (
-                ${nuevoPedidoProducto[0].id_pedido_producto},
-                ${ingrediente.id_ingrediente},
-                ${ingrediente.cantidad},
-                ${ingrediente.es_extra}
-              );
-            `
+              INSERT INTO pedidos_productos_ingredientes
+                (id_pedido_producto, id_ingrediente, cantidad, es_extra)
+              VALUES
+                (${nuevoPedidoProducto[0].id_pedido_producto},
+                 ${ing.id_ingrediente},
+                 ${ing.cantidad},
+                 ${ing.es_extra});
+            `;
           }
         }
       }
 
-      const nuevoTotal = pedidoExistente[0].total + totalAdicional
+      // parseFloat sobre total anterior
+      const totalActual = parseFloat(pedidoExistente[0].total);
+      const nuevoTotal  = totalActual + totalAdicional;
+
       const pedidoActualizado = await sql`
-        UPDATE pedidos SET total = ${nuevoTotal} WHERE id_pedido = ${id} RETURNING *;
-      `
+        UPDATE pedidos
+        SET total = ${nuevoTotal}
+        WHERE id_pedido = ${id}
+        RETURNING *;
+      `;
 
       return res.json({
         status: 'OK',
@@ -670,12 +721,19 @@ export const agregarProductosAlPedido = async (req, res) => {
           productos_agregados: productosAgregados,
           total_adicional: totalAdicional
         }
-      })
-    })
+      });
+    });
   } catch (error) {
-    res.status(500).json({ status: 'ERROR', message: `Error al agregar productos al pedido`, error: error.message })
+    console.error('Error al agregar productos al pedido:', error);
+    res.status(500).json({
+      status: 'ERROR',
+      message: 'Error al agregar productos al pedido',
+      error: error.message
+    });
   }
-}
+};
+
+
 
 
 // 10. Filtrar pedidos por rango de fechas
@@ -708,17 +766,18 @@ export const obtenerResumenPedido = async (req, res) => {
     if (pedido.length === 0)
       return res.status(404).json({ status: 'ERROR', message: `No se encontró el pedido con ID ${id}` })
 
-    const resumenProductos = await sql`
-      SELECT p.id_producto, p.nombre, p.categoria, p.precio_base,
+      const resumenProductos = await sql`
+      SELECT p.id_producto, p.nombre, c.nombre AS categoria, p.precio_base,
              COUNT(pp.id_pedido_producto) as cantidad_total,
              SUM(pp.subtotal) as subtotal_total,
              AVG(pp.subtotal) as precio_promedio_personalizado
       FROM pedidos_productos pp
       JOIN productos p ON pp.id_producto = p.id_producto
+      LEFT JOIN categoria c ON p.id_categoria = c.id_categoria
       WHERE pp.id_pedido = ${id}
-      GROUP BY p.id_producto, p.nombre, p.categoria, p.precio_base
+      GROUP BY p.id_producto, p.nombre, c.nombre, p.precio_base
       ORDER BY cantidad_total DESC, p.nombre;
-    `
+    `    
 
     const productosDetallados = await sql`
       SELECT pp.id_pedido_producto, pp.id_producto, p.nombre, 
