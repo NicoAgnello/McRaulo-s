@@ -57,7 +57,7 @@ export const updateProduct = async (req, res) => {
       SET nombre = ${nombre},
           descripcion = ${descripcion},
           precio_base = ${precio_base},
-          categoria = ${id_categoria},
+          id_categoria = ${id_categoria},
           disponible = ${disponible}
       WHERE id_producto = ${id}
       RETURNING *

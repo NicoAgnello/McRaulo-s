@@ -37,7 +37,7 @@ export const getPedidoById = async (req, res) => {
 
     // Productos del pedido
     const productos = await sql`
-      SELECT pp.*, p.nombre, p.descripcion, p.categoria
+      SELECT pp.*, p.nombre, p.descripcion, p.id_categoria
       FROM pedidos_productos pp
       JOIN productos p ON pp.id_producto = p.id_producto
       WHERE pp.id_pedido = ${id};
@@ -85,213 +85,128 @@ export const getPedidoById = async (req, res) => {
 };
 
 
-// 3. Crear nuevo pedido
-// export const createPedido = async (req, res) => {
-//   const { productos, metodo_pago, id_cliente } = req.body
-
-//   if (!productos || !Array.isArray(productos) || productos.length === 0)
-//     return res.status(400).json({ status: 'ERROR', message: 'Debe incluir al menos un producto en el pedido' })
-
-//   if (!metodo_pago)
-//     return res.status(400).json({ status: 'ERROR', message: 'Debe especificar el método de pago' })
-//   if (!id_cliente)
-//     return res.status(400).json({ status: 'ERROR', message: 'Debe incluir el ID del cliente' });
-//   try {
-//     return await sql.begin(async (sql) => {
-//       let total = 0
-
-//       for (const producto of productos) {
-//         const productoInfo = await sql`
-//           SELECT * FROM productos 
-//           WHERE id_producto = ${producto.id_producto} 
-//           AND disponible = TRUE;
-//         `
-//         if (productoInfo.length === 0) throw new Error(`Producto con ID ${producto.id_producto} no existe`)
-
-//         let subtotal = productoInfo[0].precio_base
-
-//         if (producto.ingredientes_personalizados) {
-//           for (const ingrediente of producto.ingredientes_personalizados) {
-//             if (ingrediente.es_extra) {
-//               const ingredienteInfo = await sql`
-//                 SELECT * FROM ingredientes
-//                 WHERE id_ingrediente = ${ingrediente.id_ingrediente};
-//               `
-//               if (ingredienteInfo.length === 0) throw new Error(`Ingrediente con ID ${ingrediente.id_ingrediente} no existe`)
-//               subtotal += ingredienteInfo[0].precio * ingrediente.cantidad
-//             }
-//           }
-//         }
-
-//         producto.subtotal = subtotal
-//         total += subtotal
-//       }
-
-//       const fechaHora = Math.floor(Date.now() / 1000)
-
-//       const nuevoPedido = await sql`
-//         INSERT INTO pedidos (fecha_hora, estado, total, metodo_pago, id_cliente)
-//         VALUES (${fechaHora}, 'pendiente', ${total}, ${metodo_pago}, ${id_cliente})
-//         RETURNING *;
-//       `
-
-
-//       for (const producto of productos) {
-//         const nuevoPedidoProducto = await sql`
-//           INSERT INTO pedidos_productos (id_pedido, id_producto, subtotal, notas)
-//           VALUES (${nuevoPedido[0].id_pedido}, ${producto.id_producto}, ${producto.subtotal}, ${producto.notas || null})
-//           RETURNING *;
-//         `
-
-//         if (producto.ingredientes_personalizados) {
-//           for (const ingrediente of producto.ingredientes_personalizados) {
-//             await sql`
-//               INSERT INTO pedidos_productos_ingredientes (
-//                 id_pedido_producto, id_ingrediente, cantidad, es_extra
-//               ) VALUES (
-//                 ${nuevoPedidoProducto[0].id_pedido_producto},
-//                 ${ingrediente.id_ingrediente},
-//                 ${ingrediente.cantidad},
-//                 ${ingrediente.es_extra}
-//               );
-//             `
-//           }
-//         }
-//       }
-
-//       return res.status(201).json({
-//         status: 'OK',
-//         message: 'Pedido creado correctamente',
-//         data: nuevoPedido[0]
-//       })
-//     })
-//   } catch (error) {
-//     res.status(500).json({ status: 'ERROR', message: 'Error al crear el pedido', error: error.message })
-//   }
-// }
+// 3. Crear nuevo pedido (-)
 export const createPedido = async (req, res) => {
-  const { productos, metodo_pago, id_cliente } = req.body
+  const { productos, metodo_pago, id_metodo_pago, id_cliente } = req.body;
 
-  if (!productos || !Array.isArray(productos) || productos.length === 0)
-    return res.status(400).json({ status: 'ERROR', message: 'Debe incluir al menos un producto en el pedido' })
-
-  if (!metodo_pago)
-    return res.status(400).json({ status: 'ERROR', message: 'Debe especificar el método de pago' })
-
-  if (!id_cliente)
+  if (!productos || !Array.isArray(productos) || productos.length === 0) {
+    return res.status(400).json({ status: 'ERROR', message: 'Debe incluir al menos un producto en el pedido' });
+  }
+  if (!id_cliente) {
     return res.status(400).json({ status: 'ERROR', message: 'Debe incluir el ID del cliente' });
+  }
+  if (!id_metodo_pago && !metodo_pago) {
+    return res.status(400).json({ status: 'ERROR', message: 'Debe especificar el método de pago (id_metodo_pago o metodo_pago)' });
+  }
 
   try {
+    const cli = await sql`SELECT 1 FROM clientes WHERE id_cliente = ${id_cliente}`;
+    if (cli.length === 0) {
+      return res.status(400).json({ status: 'ERROR', message: `El cliente ${id_cliente} no existe` });
+    }
+
+    // Resolver método de pago por id o por nombre
+    let metodoPagoRow = null;
+    if (id_metodo_pago) {
+      const r = await sql`SELECT id_metodo_pago, nombre FROM metodo_pago WHERE id_metodo_pago = ${id_metodo_pago}`;
+      if (r.length === 0) return res.status(400).json({ status: 'ERROR', message: `id_metodo_pago ${id_metodo_pago} inválido` });
+      metodoPagoRow = r[0];
+    } else {
+      const r = await sql`SELECT id_metodo_pago, nombre FROM metodo_pago WHERE LOWER(nombre) = LOWER(${metodo_pago})`;
+      if (r.length === 0) return res.status(400).json({ status: 'ERROR', message: `metodo_pago "${metodo_pago}" inválido` });
+      metodoPagoRow = r[0];
+    }
+
+    // (Opcional) id del estado "pendiente"
+    let estadoPendienteId = null;
+    try {
+      const e = await sql`SELECT id_estado FROM estado WHERE LOWER(nombre) = 'pendiente' LIMIT 1`;
+      if (e.length > 0) estadoPendienteId = e[0].id_estado;
+    } catch {}
+
     return await sql.begin(async (sql) => {
-      let total = 0
+      // Calcular totales
+      let total = 0;
+      for (const prod of productos) {
+        const prodRow = await sql`
+          SELECT * FROM productos WHERE id_producto = ${prod.id_producto} AND disponible = TRUE;
+        `;
+        if (prodRow.length === 0) throw new Error(`Producto ${prod.id_producto} inexistente o no disponible`);
 
-      for (const producto of productos) {
-        const productoInfo = await sql`
-          SELECT * FROM productos 
-          WHERE id_producto = ${producto.id_producto} 
-          AND disponible = TRUE;
-        `
-        if (productoInfo.length === 0) throw new Error(`Producto con ID ${producto.id_producto} no existe`)
+        let subtotal = parseFloat(prodRow[0].precio_base);
 
-        let subtotal = parseFloat(productoInfo[0].precio_base)
-
-        if (producto.ingredientes_personalizados) {
-          for (const ingrediente of producto.ingredientes_personalizados) {
-            if (ingrediente.es_extra) {
-              const ingredienteInfo = await sql`
-                SELECT * FROM ingredientes
-                WHERE id_ingrediente = ${ingrediente.id_ingrediente};
-              `
-              if (ingredienteInfo.length === 0) throw new Error(`Ingrediente con ID ${ingrediente.id_ingrediente} no existe`)
-              subtotal += parseFloat(ingredienteInfo[0].precio) * ingrediente.cantidad
+        if (Array.isArray(prod.ingredientes_personalizados)) {
+          for (const ing of prod.ingredientes_personalizados) {
+            const ingRow = await sql`SELECT * FROM ingredientes WHERE id_ingrediente = ${ing.id_ingrediente};`;
+            if (ingRow.length === 0) throw new Error(`Ingrediente ${ing.id_ingrediente} inexistente`);
+            if (ing.es_extra && ing.cantidad > 0) {
+              subtotal += parseFloat(ingRow[0].precio) * ing.cantidad;
             }
           }
         }
 
-        producto.subtotal = subtotal
-        total += subtotal
+        prod.subtotal = subtotal;
+        total += subtotal;
       }
 
-      const fechaHora = Math.floor(Date.now() / 1000)
-
-      const nuevoPedido = await sql`
-        INSERT INTO pedidos (fecha_hora, estado, total, metodo_pago, id_cliente)
-        VALUES (${fechaHora}, 'pendiente', ${total}, ${metodo_pago}, ${id_cliente})
-        RETURNING *;
-      `
-
-      for (const producto of productos) {
-        const nuevoPedidoProducto = await sql`
-          INSERT INTO pedidos_productos (id_pedido, id_producto, subtotal, notas)
-          VALUES (${nuevoPedido[0].id_pedido}, ${producto.id_producto}, ${producto.subtotal}, ${producto.notas || null})
+      // Insertar pedido (sin metodo_pago)
+      let nuevoPedido;
+      if (estadoPendienteId !== null) {
+        [nuevoPedido] = await sql`
+          INSERT INTO pedidos (fecha_hora, estado, total, id_cliente, estado_actual)
+          VALUES (NOW(), 'pendiente', ${total}, ${id_cliente}, ${estadoPendienteId})
           RETURNING *;
-        `
+        `;
+      } else {
+        [nuevoPedido] = await sql`
+          INSERT INTO pedidos (fecha_hora, estado, total, id_cliente)
+          VALUES (NOW(), 'pendiente', ${total}, ${id_cliente})
+          RETURNING *;
+        `;
+      }
 
-        if (producto.ingredientes_personalizados) {
-          for (const ingrediente of producto.ingredientes_personalizados) {
+      // Líneas del pedido
+      for (const prod of productos) {
+        const [pp] = await sql`
+          INSERT INTO pedidos_productos (id_pedido, id_producto, subtotal, notas)
+          VALUES (${nuevoPedido.id_pedido}, ${prod.id_producto}, ${prod.subtotal}, ${prod.notas || null})
+          RETURNING *;
+        `;
+        if (Array.isArray(prod.ingredientes_personalizados)) {
+          for (const ing of prod.ingredientes_personalizados) {
             await sql`
-              INSERT INTO pedidos_productos_ingredientes (
-                id_pedido_producto, id_ingrediente, cantidad, es_extra
-              ) VALUES (
-                ${nuevoPedidoProducto[0].id_pedido_producto},
-                ${ingrediente.id_ingrediente},
-                ${ingrediente.cantidad},
-                ${ingrediente.es_extra}
-              );
-            `
+              INSERT INTO pedidos_productos_ingredientes (id_pedido_producto, id_ingrediente, cantidad, es_extra)
+              VALUES (${pp.id_pedido_producto}, ${ing.id_ingrediente}, ${ing.cantidad}, ${ing.es_extra});
+            `;
           }
         }
       }
 
-      // Buscar datos del cliente para devolver en la response
-      const clienteData = await sql`
-        SELECT id_cliente, nombre, email -- agregá más campos si querés
-        FROM clientes
-        WHERE id_cliente = ${id_cliente};
-      `
+      // Registrar compra con el método de pago
+      await sql`
+        INSERT INTO compra (id_pedido, id_metodo_pago, fecha)
+        VALUES (${nuevoPedido.id_pedido}, ${metodoPagoRow.id_metodo_pago}, NOW());
+      `;
 
-      res.status(201).json({
+      // Datos del cliente para la respuesta
+      const [clienteData] = await sql`
+        SELECT id_cliente, nombre, email FROM clientes WHERE id_cliente = ${id_cliente};
+      `;
+
+      return res.status(201).json({
         status: 'OK',
         message: 'Pedido creado correctamente',
-        data: {
-          pedido: nuevoPedido[0],
-          cliente: clienteData[0],
-          productos // o armá productos con los datos más completos si querés
-        }
-      })
-    })
+        data: { pedido: nuevoPedido, cliente: clienteData, productos }
+      });
+    });
   } catch (error) {
-    res.status(500).json({ status: 'ERROR', message: 'Error al crear el pedido', error: error.message })
+    console.error('Error al crear pedido:', error);
+    return res.status(500).json({ status: 'ERROR', message: 'Error al crear el pedido', error: error.message });
   }
-}
+};
 
 
 // 4. Actualizar estado de un pedido
-// export const updateEstadoPedido = async (req, res) => {
-//   const { id } = req.params
-//   const { estado } = req.body
-//   const estadosValidos = ['pendiente', 'en_preparacion', 'listo', 'entregado', 'cancelado']
-
-//   if (!estado || !estadosValidos.includes(estado)) {
-//     return res.status(400).json({
-//       status: 'ERROR',
-//       message: `Estado inválido. Debe ser uno de: ${estadosValidos.join(', ')}`
-//     })
-//   }
-
-//   try {
-//     const pedido = await sql`SELECT * FROM pedidos WHERE id_pedido = ${id};`
-//     if (pedido.length === 0) return res.status(404).json({ status: 'ERROR', message: `No se encontró el pedido con ID ${id}` })
-
-//     const pedidoActualizado = await sql`
-//       UPDATE pedidos SET estado = ${estado} WHERE id_pedido = ${id} RETURNING *;
-//     `
-
-//     res.json({ status: 'OK', message: `Estado actualizado a "${estado}"`, data: pedidoActualizado[0] })
-//   } catch (error) {
-//     res.status(500).json({ status: 'ERROR', message: `Error al actualizar estado del pedido ${id}`, error: error.message })
-//   }
-// }
 export const updateEstadoPedido = async (req, res) => {
   const { id } = req.params
   const { estado } = req.body
@@ -322,7 +237,7 @@ export const updateEstadoPedido = async (req, res) => {
 
     // Traer productos con ingredientes
     const productos = await sql`
-      SELECT pp.*, p.nombre, p.descripcion, p.categoria
+      SELECT pp.*, p.nombre, p.descripcion, p.id_categoria
       FROM pedidos_productos pp
       JOIN productos p ON pp.id_producto = p.id_producto
       WHERE pp.id_pedido = ${id};
@@ -350,7 +265,7 @@ export const updateEstadoPedido = async (req, res) => {
   }
 }
 
-// 5. Eliminar un pedido
+// 5. Eliminar un pedido (-)
 export const deletePedido = async (req, res) => {
   const { id } = req.params
   try {
@@ -479,7 +394,8 @@ export const getEstadisticasPedidos = async (req, res) => {
       FROM pedidos p
       JOIN compra c          ON c.id_pedido       = p.id_pedido
       JOIN metodo_pago mp    ON mp.id_metodo_pago = c.id_metodo_pago
-      GROUP BY mp.id_metodo_pago, mp.nombre;
+      GROUP BY mp.id_metodo_pago, mp.nombre
+      ORDER BY total_ventas DESC;
     `;
 
     const productosConMasPersonalizaciones = await sql`
@@ -516,102 +432,6 @@ export const getEstadisticasPedidos = async (req, res) => {
 };
 
 
-
-// 9. Agregar productos a un pedido existente
-// export const agregarProductosAlPedido = async (req, res) => {
-//   const { id } = req.params
-//   const { productos } = req.body
-
-//   if (!productos || !Array.isArray(productos) || productos.length === 0) {
-//     return res.status(400).json({
-//       status: 'ERROR',
-//       message: 'Debe incluir al menos un producto para agregar al pedido'
-//     })
-//   }
-
-//   try {
-//     const pedidoExistente = await sql`SELECT * FROM pedidos WHERE id_pedido = ${id};`
-//     if (pedidoExistente.length === 0)
-//       return res.status(404).json({ status: 'ERROR', message: `No se encontró el pedido con ID ${id}` })
-
-//     if (['entregado', 'cancelado'].includes(pedidoExistente[0].estado))
-//       return res.status(400).json({
-//         status: 'ERROR',
-//         message: `No se pueden agregar productos a un pedido en estado "${pedidoExistente[0].estado}"`
-//       })
-
-//     return await sql.begin(async (sql) => {
-//       let totalAdicional = 0
-//       const productosAgregados = []
-
-//       for (const producto of productos) {
-//         const productoInfo = await sql`
-//           SELECT * FROM productos WHERE id_producto = ${producto.id_producto} AND disponible = TRUE;
-//         `
-//         if (productoInfo.length === 0)
-//           throw new Error(`El producto con ID ${producto.id_producto} no existe o no está disponible`)
-
-//         let subtotal = productoInfo[0].precio_base
-
-//         if (producto.ingredientes_personalizados) {
-//           for (const ingrediente of producto.ingredientes_personalizados) {
-//             if (ingrediente.es_extra) {
-//               const ingredienteInfo = await sql`
-//                 SELECT * FROM ingredientes WHERE id_ingrediente = ${ingrediente.id_ingrediente};
-//               `
-//               if (ingredienteInfo.length === 0)
-//                 throw new Error(`El ingrediente con ID ${ingrediente.id_ingrediente} no existe`)
-//               subtotal += ingredienteInfo[0].precio * ingrediente.cantidad
-//             }
-//           }
-//         }
-
-//         totalAdicional += subtotal
-
-//         const nuevoPedidoProducto = await sql`
-//           INSERT INTO pedidos_productos (id_pedido, id_producto, subtotal, notas)
-//           VALUES (${id}, ${producto.id_producto}, ${subtotal}, ${producto.notas || null})
-//           RETURNING *;
-//         `
-
-//         productosAgregados.push(nuevoPedidoProducto[0])
-
-//         if (producto.ingredientes_personalizados) {
-//           for (const ingrediente of producto.ingredientes_personalizados) {
-//             await sql`
-//               INSERT INTO pedidos_productos_ingredientes (
-//                 id_pedido_producto, id_ingrediente, cantidad, es_extra
-//               )
-//               VALUES (
-//                 ${nuevoPedidoProducto[0].id_pedido_producto},
-//                 ${ingrediente.id_ingrediente},
-//                 ${ingrediente.cantidad},
-//                 ${ingrediente.es_extra}
-//               );
-//             `
-//           }
-//         }
-//       }
-
-//       const nuevoTotal = pedidoExistente[0].total + totalAdicional
-//       const pedidoActualizado = await sql`
-//         UPDATE pedidos SET total = ${nuevoTotal} WHERE id_pedido = ${id} RETURNING *;
-//       `
-
-//       return res.json({
-//         status: 'OK',
-//         message: 'Productos agregados correctamente al pedido',
-//         data: {
-//           pedido: pedidoActualizado[0],
-//           productos_agregados: productosAgregados,
-//           total_adicional: totalAdicional
-//         }
-//       })
-//     })
-//   } catch (error) {
-//     res.status(500).json({ status: 'ERROR', message: `Error al agregar productos al pedido`, error: error.message })
-//   }
-// }
 export const agregarProductosAlPedido = async (req, res) => {
   const { id } = req.params;
   const { productos } = req.body;
@@ -738,25 +558,43 @@ export const agregarProductosAlPedido = async (req, res) => {
 
 // 10. Filtrar pedidos por rango de fechas
 export const filtrarPedidosPorFecha = async (req, res) => {
-  const { desde, hasta } = req.query
+  const { desde, hasta } = req.query;
+
   if (!desde || !hasta) {
     return res.status(400).json({
       status: 'ERROR',
-      message: 'Debe proporcionar fechas de inicio y fin (desde, hasta) en formato timestamp'
-    })
+      message: 'Debe proporcionar fechas (desde, hasta) como Unix epoch en segundos o milisegundos'
+    });
   }
 
   try {
+    // Acepta epoch en segundos o milisegundos
+    const toSecs = (v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) throw new Error('Parámetros desde/hasta inválidos');
+      return n > 1e12 ? Math.floor(n / 1000) : Math.floor(n); // ms -> s
+    };
+
+    const d = toSecs(desde);
+    const h = toSecs(hasta);
+
     const pedidos = await sql`
-      SELECT * FROM pedidos
-      WHERE fecha_hora >= ${desde} AND fecha_hora <= ${hasta}
+      SELECT *
+      FROM pedidos
+      WHERE fecha_hora >= to_timestamp(${d})::timestamp
+        AND fecha_hora < to_timestamp(${h})::timestamp
       ORDER BY fecha_hora DESC;
-    `
-    res.json({ status: 'OK', data: pedidos })
+    `;
+
+    res.json({ status: 'OK', data: pedidos });
   } catch (error) {
-    res.status(500).json({ status: 'ERROR', message: 'Error al filtrar pedidos por fecha', error: error.message })
+    res.status(500).json({
+      status: 'ERROR',
+      message: 'Error al filtrar pedidos por fecha',
+      error: error.message
+    });
   }
-}
+};
 
 // 11. Obtener resumen de productos en un pedido
 export const obtenerResumenPedido = async (req, res) => {
@@ -855,19 +693,73 @@ export const eliminarProductoDePedido = async (req, res) => {
   }
 }
 
+// GET /api/pedidos/metodo-pago/:metodo
 export const getPedidosPorMetodoPago = async (req, res) => {
-  const { metodo } = req.params
+  const { metodo } = req.params;
+
   try {
+    // 1) Resolver método de pago (por ID numérico o por nombre)
+    let mpRow;
+    if (/^\d+$/.test(metodo)) {
+      const r = await sql`
+        SELECT id_metodo_pago, nombre
+        FROM metodo_pago
+        WHERE id_metodo_pago = ${Number(metodo)}
+        LIMIT 1;
+      `;
+      if (r.length === 0) {
+        return res.status(404).json({
+          status: 'ERROR',
+          message: `Método de pago con id ${metodo} no existe`
+        });
+      }
+      mpRow = r[0];
+    } else {
+      const r = await sql`
+        SELECT id_metodo_pago, nombre
+        FROM metodo_pago
+        WHERE LOWER(nombre) = LOWER(${metodo})
+        LIMIT 1;
+      `;
+      if (r.length === 0) {
+        return res.status(404).json({
+          status: 'ERROR',
+          message: `Método de pago "${metodo}" no existe`
+        });
+      }
+      mpRow = r[0];
+    }
+
+    // 2) Traer pedidos asociados a ese método (via compra)
     const pedidos = await sql`
-      SELECT * FROM pedidos
-      WHERE metodo_pago = ${metodo}
-      ORDER BY fecha_hora DESC;
-    `
-    res.json({ status: 'OK', data: pedidos })
+      SELECT p.*, mp.nombre AS metodo_pago
+      FROM pedidos p
+      JOIN compra c          ON c.id_pedido       = p.id_pedido
+      JOIN metodo_pago mp    ON mp.id_metodo_pago = c.id_metodo_pago
+      WHERE mp.id_metodo_pago = ${mpRow.id_metodo_pago}
+      ORDER BY p.fecha_hora DESC;
+    `;
+
+    // 3) Respuesta (si no hay pedidos, devolvemos 200 con lista vacía)
+    return res.json({
+      status: 'OK',
+      meta: {
+        metodo_pago: { id: mpRow.id_metodo_pago, nombre: mpRow.nombre },
+        cantidad: pedidos.length
+      },
+      data: pedidos
+    });
   } catch (error) {
-    res.status(500).json({ status: 'ERROR', message: `Error al obtener pedidos con método ${metodo}`, error: error.message })
+    console.error('Error al obtener pedidos por método de pago:', error);
+    return res.status(500).json({
+      status: 'ERROR',
+      message: 'Error al obtener pedidos por método de pago',
+      error: error.message
+    });
   }
-}
+};
+
+
 
 export const getPedidosByCliente = async (req, res) => {
   const { idCliente } = req.params;

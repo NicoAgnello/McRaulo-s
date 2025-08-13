@@ -1,3 +1,4 @@
+import sql from '../services/dbSupabase.js'
 export const getCategorias = async (req, res) => {
   try {
     const categorias = await sql`
