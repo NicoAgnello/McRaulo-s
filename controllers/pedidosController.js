@@ -85,118 +85,138 @@ export const getPedidoById = async (req, res) => {
 };
 
 
-// 3. Crear nuevo pedido (-)
+// 3. Crear nuevo pedido (desacoplado del pago: solo efectivo crea compra)
 export const createPedido = async (req, res) => {
   const { productos, metodo_pago, id_metodo_pago, id_cliente } = req.body;
 
-  if (!productos || !Array.isArray(productos) || productos.length === 0) {
+  if (!productos || !Array.isArray(productos) || productos.length === 0)
     return res.status(400).json({ status: 'ERROR', message: 'Debe incluir al menos un producto en el pedido' });
-  }
-  if (!id_cliente) {
+  if (!id_cliente)
     return res.status(400).json({ status: 'ERROR', message: 'Debe incluir el ID del cliente' });
-  }
-  if (!id_metodo_pago && !metodo_pago) {
+  if (!id_metodo_pago && !metodo_pago)
     return res.status(400).json({ status: 'ERROR', message: 'Debe especificar el método de pago (id_metodo_pago o metodo_pago)' });
-  }
 
   try {
+    // Cliente
     const cli = await sql`SELECT 1 FROM clientes WHERE id_cliente = ${id_cliente}`;
-    if (cli.length === 0) {
-      return res.status(400).json({ status: 'ERROR', message: `El cliente ${id_cliente} no existe` });
-    }
+    if (cli.length === 0) return res.status(400).json({ status: 'ERROR', message: `El cliente ${id_cliente} no existe` });
 
-    // Resolver método de pago por id o por nombre
-    let metodoPagoRow = null;
+    // Resolver método (por id o por nombre)
+    let mp;
     if (id_metodo_pago) {
-      const r = await sql`SELECT id_metodo_pago, nombre FROM metodo_pago WHERE id_metodo_pago = ${id_metodo_pago}`;
+      const r = await sql`SELECT id_metodo_pago, LOWER(nombre) AS nombre FROM metodo_pago WHERE id_metodo_pago = ${id_metodo_pago}`;
       if (r.length === 0) return res.status(400).json({ status: 'ERROR', message: `id_metodo_pago ${id_metodo_pago} inválido` });
-      metodoPagoRow = r[0];
+      mp = r[0];
     } else {
-      const r = await sql`SELECT id_metodo_pago, nombre FROM metodo_pago WHERE LOWER(nombre) = LOWER(${metodo_pago})`;
+      const r = await sql`SELECT id_metodo_pago, LOWER(nombre) AS nombre FROM metodo_pago WHERE LOWER(nombre) = LOWER(${metodo_pago})`;
       if (r.length === 0) return res.status(400).json({ status: 'ERROR', message: `metodo_pago "${metodo_pago}" inválido` });
-      metodoPagoRow = r[0];
+      mp = r[0];
     }
 
-    // (Opcional) id del estado "pendiente"
-    let estadoPendienteId = null;
-    try {
-      const e = await sql`SELECT id_estado FROM estado WHERE LOWER(nombre) = 'pendiente' LIMIT 1`;
-      if (e.length > 0) estadoPendienteId = e[0].id_estado;
-    } catch {}
+    // Transacción
+    return await sql.begin(async (tx) => {
+      // (opcional) mapear id de estado 'pendiente'
+      let estadoPendienteId = null;
+      try {
+        const e = await tx`SELECT id_estado FROM estado WHERE LOWER(nombre)='pendiente' LIMIT 1`;
+        if (e.length > 0) estadoPendienteId = e[0].id_estado;
+      } catch (_) {}
 
-    return await sql.begin(async (sql) => {
-      // Calcular totales
+      // Calcular total con validaciones (mismo criterio que ya veníamos usando)
       let total = 0;
       for (const prod of productos) {
-        const prodRow = await sql`
-          SELECT * FROM productos WHERE id_producto = ${prod.id_producto} AND disponible = TRUE;
+        const [p] = await tx`
+          SELECT p.id_producto, p.nombre, p.precio_base::float AS precio_base,
+                 c.permite_extras
+          FROM productos p
+          LEFT JOIN categoria c ON c.id_categoria = p.id_categoria
+          WHERE p.id_producto = ${prod.id_producto} AND p.disponible = TRUE
         `;
-        if (prodRow.length === 0) throw new Error(`Producto ${prod.id_producto} inexistente o no disponible`);
+        if (!p) return res.status(400).json({ status: 'ERROR', message: `Producto ${prod.id_producto} inexistente o no disponible` });
 
-        let subtotal = parseFloat(prodRow[0].precio_base);
+        const lista = Array.isArray(prod.ingredientes_personalizados) ? prod.ingredientes_personalizados : [];
+        for (const ing of lista) {
+          if (typeof ing.id_ingrediente !== 'number') return res.status(400).json({ status: 'ERROR', message: `Falta id_ingrediente en una personalización` });
+          if (typeof ing.cantidad !== 'number' || ing.cantidad <= 0) return res.status(400).json({ status: 'ERROR', message: `La cantidad debe ser > 0 para el ingrediente ${ing.id_ingrediente}` });
+          if (typeof ing.es_extra !== 'boolean') ing.es_extra = !!ing.es_extra;
+        }
 
-        if (Array.isArray(prod.ingredientes_personalizados)) {
-          for (const ing of prod.ingredientes_personalizados) {
-            const ingRow = await sql`SELECT * FROM ingredientes WHERE id_ingrediente = ${ing.id_ingrediente};`;
-            if (ingRow.length === 0) throw new Error(`Ingrediente ${ing.id_ingrediente} inexistente`);
-            if (ing.es_extra && ing.cantidad > 0) {
-              subtotal += parseFloat(ingRow[0].precio) * ing.cantidad;
+        // Bloquear extras si la categoría no lo permite
+        if (p.permite_extras === false && lista.some(i => i.es_extra && i.cantidad > 0)) {
+          return res.status(400).json({ status: 'ERROR', message: `El producto "${p.nombre}" no admite extras` });
+        }
+
+        // Si hay remociones, verificar contra receta base
+        if (lista.some(i => !i.es_extra)) {
+          const baseRows = await tx`
+            SELECT id_ingrediente FROM productos_ingredientes_base WHERE id_producto = ${prod.id_producto}
+          `;
+          const baseSet = new Set(baseRows.map(r => r.id_ingrediente));
+          for (const ing of lista) {
+            if (!ing.es_extra && !baseSet.has(ing.id_ingrediente)) {
+              return res.status(400).json({ status: 'ERROR', message: `No se puede remover el ingrediente ${ing.id_ingrediente} en "${p.nombre}" porque no está en la receta base` });
             }
           }
         }
 
+        // Subtotal = base + extras
+        let subtotal = p.precio_base;
+        for (const ing of lista) {
+          if (!ing.es_extra) continue;
+          const [ingRow] = await tx`SELECT precio::float AS precio FROM ingredientes WHERE id_ingrediente = ${ing.id_ingrediente}`;
+          if (!ingRow) return res.status(400).json({ status: 'ERROR', message: `Ingrediente ${ing.id_ingrediente} inexistente` });
+          subtotal += ingRow.precio * ing.cantidad;
+        }
         prod.subtotal = subtotal;
         total += subtotal;
       }
 
-      // Insertar pedido (sin metodo_pago)
+      // Insertar pedido
       let nuevoPedido;
       if (estadoPendienteId !== null) {
-        [nuevoPedido] = await sql`
+        [nuevoPedido] = await tx`
           INSERT INTO pedidos (fecha_hora, estado, total, id_cliente, estado_actual)
           VALUES (NOW(), 'pendiente', ${total}, ${id_cliente}, ${estadoPendienteId})
           RETURNING *;
         `;
       } else {
-        [nuevoPedido] = await sql`
+        [nuevoPedido] = await tx`
           INSERT INTO pedidos (fecha_hora, estado, total, id_cliente)
           VALUES (NOW(), 'pendiente', ${total}, ${id_cliente})
           RETURNING *;
         `;
       }
 
-      // Líneas del pedido
+      // Insertar líneas + personalizaciones
       for (const prod of productos) {
-        const [pp] = await sql`
+        const [pp] = await tx`
           INSERT INTO pedidos_productos (id_pedido, id_producto, subtotal, notas)
           VALUES (${nuevoPedido.id_pedido}, ${prod.id_producto}, ${prod.subtotal}, ${prod.notas || null})
           RETURNING *;
         `;
-        if (Array.isArray(prod.ingredientes_personalizados)) {
-          for (const ing of prod.ingredientes_personalizados) {
-            await sql`
-              INSERT INTO pedidos_productos_ingredientes (id_pedido_producto, id_ingrediente, cantidad, es_extra)
-              VALUES (${pp.id_pedido_producto}, ${ing.id_ingrediente}, ${ing.cantidad}, ${ing.es_extra});
-            `;
-          }
+        const lista = Array.isArray(prod.ingredientes_personalizados) ? prod.ingredientes_personalizados : [];
+        for (const ing of lista) {
+          await tx`
+            INSERT INTO pedidos_productos_ingredientes (id_pedido_producto, id_ingrediente, cantidad, es_extra)
+            VALUES (${pp.id_pedido_producto}, ${ing.id_ingrediente}, ${ing.cantidad}, ${ing.es_extra});
+          `;
         }
       }
 
-      // Registrar compra con el método de pago
-      await sql`
-        INSERT INTO compra (id_pedido, id_metodo_pago, fecha)
-        VALUES (${nuevoPedido.id_pedido}, ${metodoPagoRow.id_metodo_pago}, NOW());
-      `;
+      // ⚠️ Compra SOLO si es EFECTIVO
+      if (mp.nombre === 'efectivo') {
+        await tx`INSERT INTO compra (id_pedido, id_metodo_pago) VALUES (${nuevoPedido.id_pedido}, ${mp.id_metodo_pago});`;
+      }
 
-      // Datos del cliente para la respuesta
-      const [clienteData] = await sql`
-        SELECT id_cliente, nombre, email FROM clientes WHERE id_cliente = ${id_cliente};
-      `;
+      // Datos de cliente
+      const [cliente] = await tx`SELECT id_cliente, nombre, email FROM clientes WHERE id_cliente = ${id_cliente};`;
 
       return res.status(201).json({
         status: 'OK',
-        message: 'Pedido creado correctamente',
-        data: { pedido: nuevoPedido, cliente: clienteData, productos }
+        message: mp.nombre === 'efectivo'
+          ? 'Pedido creado correctamente (pago en efectivo)'
+          : 'Pedido creado correctamente (pago pendiente)',
+        data: { pedido: nuevoPedido, cliente, productos }
       });
     });
   } catch (error) {
@@ -205,27 +225,79 @@ export const createPedido = async (req, res) => {
   }
 };
 
-
 // 4. Actualizar estado de un pedido
 export const updateEstadoPedido = async (req, res) => {
-  const { id } = req.params
-  const { estado } = req.body
-  const estadosValidos = ['pendiente', 'en_preparacion', 'listo', 'entregado', 'cancelado']
+  const { id } = req.params;
+  const { estado } = req.body;
 
+  const estadosValidos = ['pendiente', 'en_preparacion', 'listo', 'entregado', 'cancelado'];
   if (!estado || !estadosValidos.includes(estado)) {
     return res.status(400).json({
       status: 'ERROR',
       message: `Estado inválido. Debe ser uno de: ${estadosValidos.join(', ')}`
-    })
+    });
   }
 
   try {
-    const pedido = await sql`SELECT * FROM pedidos WHERE id_pedido = ${id};`
-    if (pedido.length === 0) return res.status(404).json({ status: 'ERROR', message: `No se encontró el pedido con ID ${id}` })
+    const pedidoRows = await sql`SELECT * FROM pedidos WHERE id_pedido = ${id};`;
+    if (pedidoRows.length === 0) {
+      return res.status(404).json({ status: 'ERROR', message: `No se encontró el pedido con ID ${id}` });
+    }
 
-    await sql`
-      UPDATE pedidos SET estado = ${estado} WHERE id_pedido = ${id};
-    `
+    const pedido = pedidoRows[0];
+
+    // ❗ Evitar cambiar al mismo estado
+    if (pedido.estado === estado) {
+      return res.status(409).json({
+        status: 'ERROR',
+        message: `El pedido ya se encuentra en estado "${estado}"`
+      });
+    }
+
+    // ❗ Bloquear cambios si ya está finalizado
+    if (['entregado', 'cancelado'].includes(pedido.estado)) {
+      return res.status(400).json({
+        status: 'ERROR',
+        message: `No se puede cambiar el estado de un pedido "${pedido.estado}"`
+      });
+    }
+
+    // Transacción para actualizar estado + opcionalmente historial
+    await sql.begin(async (tx) => {
+      // Intentar usar tabla 'estado' y columna 'estado_actual' si existen
+      let idEstadoNuevo = null;
+      try {
+        const e = await tx`
+          SELECT id_estado FROM estado WHERE LOWER(nombre) = LOWER(${estado}) LIMIT 1;
+        `;
+        if (e.length > 0) idEstadoNuevo = e[0].id_estado;
+      } catch (_) { /* si no existe la tabla 'estado', seguimos */ }
+
+      if (idEstadoNuevo !== null) {
+        // Actualiza estado string + id de estado actual si existe la columna
+        try {
+          await tx`
+            UPDATE pedidos
+            SET estado = ${estado}, estado_actual = ${idEstadoNuevo}
+            WHERE id_pedido = ${id};
+          `;
+        } catch (_) {
+          // Si no existe estado_actual, actualizamos solo el string
+          await tx`UPDATE pedidos SET estado = ${estado} WHERE id_pedido = ${id};`;
+        }
+
+        // Registrar historial si existe tabla 'estado_pedido'
+        try {
+          await tx`
+            INSERT INTO estado_pedido (id_pedido, id_estado, fecha_hora)
+            VALUES (${id}, ${idEstadoNuevo}, NOW());
+          `;
+        } catch (_) { /* si no existe la tabla/columnas, no rompemos */ }
+      } else {
+        // Fallback: solo actualiza el string del estado
+        await tx`UPDATE pedidos SET estado = ${estado} WHERE id_pedido = ${id};`;
+      }
+    });
 
     // Traer pedido actualizado con datos del cliente
     const pedidoConCliente = await sql`
@@ -233,7 +305,7 @@ export const updateEstadoPedido = async (req, res) => {
       FROM pedidos p
       JOIN clientes c ON p.id_cliente = c.id_cliente
       WHERE p.id_pedido = ${id};
-    `
+    `;
 
     // Traer productos con ingredientes
     const productos = await sql`
@@ -241,29 +313,35 @@ export const updateEstadoPedido = async (req, res) => {
       FROM pedidos_productos pp
       JOIN productos p ON pp.id_producto = p.id_producto
       WHERE pp.id_pedido = ${id};
-    `
+    `;
 
     const productosConIngredientes = await Promise.all(
-      productos.map(async (producto) => {
+      productos.map(async (prod) => {
         const ingredientes = await sql`
           SELECT ppi.*, i.nombre, i.descripcion, i.unidad_medida
           FROM pedidos_productos_ingredientes ppi
           JOIN ingredientes i ON ppi.id_ingrediente = i.id_ingrediente
-          WHERE ppi.id_pedido_producto = ${producto.id_pedido_producto};
-        `
-        return { ...producto, ingredientes_personalizados: ingredientes }
+          WHERE ppi.id_pedido_producto = ${prod.id_pedido_producto};
+        `;
+        return { ...prod, ingredientes_personalizados: ingredientes };
       })
-    )
+    );
 
-    res.json({ 
-      status: 'OK', 
-      message: `Estado actualizado a "${estado}"`, 
+    return res.json({
+      status: 'OK',
+      message: `Estado actualizado a "${estado}"`,
       data: { ...pedidoConCliente[0], productos: productosConIngredientes }
-    })
+    });
   } catch (error) {
-    res.status(500).json({ status: 'ERROR', message: `Error al actualizar estado del pedido ${id}`, error: error.message })
+    console.error(`Error al actualizar estado del pedido ${id}:`, error);
+    return res.status(500).json({
+      status: 'ERROR',
+      message: `Error al actualizar estado del pedido ${id}`,
+      error: error.message
+    });
   }
-}
+};
+
 
 // 5. Eliminar un pedido (-)
 export const deletePedido = async (req, res) => {
@@ -431,7 +509,7 @@ export const getEstadisticasPedidos = async (req, res) => {
   }
 };
 
-
+// 9. Agregar producto al pedido
 export const agregarProductosAlPedido = async (req, res) => {
   const { id } = req.params;
   const { productos } = req.body;
@@ -552,8 +630,6 @@ export const agregarProductosAlPedido = async (req, res) => {
     });
   }
 };
-
-
 
 
 // 10. Filtrar pedidos por rango de fechas
@@ -759,8 +835,6 @@ export const getPedidosPorMetodoPago = async (req, res) => {
   }
 };
 
-
-
 export const getPedidosByCliente = async (req, res) => {
   const { idCliente } = req.params;
   try {
@@ -774,3 +848,108 @@ export const getPedidosByCliente = async (req, res) => {
     res.status(500).json({ status: 'ERROR', message: 'Error al obtener pedidos del cliente', error: error.message })
   }
 }
+
+// Confirmar pago de un pedido (tarjeta / mercadopago)
+// POST /api/pedidos/:id/confirmar-pago
+export const confirmarPago = async (req, res) => {
+  const { id } = req.params; // id_pedido
+  const { metodo_pago, id_metodo_pago } = req.body; // sin 'referencia'
+
+  if (!id_metodo_pago && !metodo_pago) {
+    return res.status(400).json({ status: 'ERROR', message: 'Debe indicar el método de pago (id_metodo_pago o metodo_pago)' });
+  }
+
+  try {
+    // 1) Pedido válido y no finalizado
+    const pedRows = await sql`SELECT * FROM pedidos WHERE id_pedido = ${id}`;
+    if (pedRows.length === 0) return res.status(404).json({ status: 'ERROR', message: `Pedido ${id} no existe` });
+
+    const pedido = pedRows[0];
+    if (['cancelado', 'entregado'].includes(pedido.estado)) {
+      return res.status(400).json({ status: 'ERROR', message: `No se puede confirmar pago para un pedido "${pedido.estado}"` });
+    }
+
+    // 2) Resolver método de pago
+    let mp;
+    if (id_metodo_pago) {
+      const r = await sql`
+        SELECT id_metodo_pago, LOWER(nombre) AS nombre
+        FROM metodo_pago
+        WHERE id_metodo_pago = ${id_metodo_pago}`;
+      if (r.length === 0) return res.status(400).json({ status: 'ERROR', message: `id_metodo_pago ${id_metodo_pago} inválido` });
+      mp = r[0];
+    } else {
+      const r = await sql`
+        SELECT id_metodo_pago, LOWER(nombre) AS nombre
+        FROM metodo_pago
+        WHERE LOWER(nombre) = LOWER(${metodo_pago})`;
+      if (r.length === 0) return res.status(400).json({ status: 'ERROR', message: `metodo_pago "${metodo_pago}" inválido` });
+      mp = r[0];
+    }
+
+    // Este endpoint solo para tarjeta / mercadopago; efectivo se registra al crear el pedido
+    if (mp.nombre === 'efectivo') {
+      return res.status(400).json({ status: 'ERROR', message: 'El pago en efectivo se registra al crear el pedido' });
+    }
+
+    // 3) Transacción: crear compra (si no existe) + mover estado a "en_preparacion" por FK
+    return await sql.begin(async (tx) => {
+      // 3.a) Insert de compra (requiere índice único en compra(id_pedido), que ya creaste)
+      const compraInsert = await tx`
+        INSERT INTO compra (id_pedido, id_metodo_pago, fecha)
+        VALUES (${id}, ${mp.id_metodo_pago}, NOW())
+        ON CONFLICT (id_pedido) DO NOTHING
+        RETURNING *;`;
+      if (compraInsert.length === 0) {
+        const ya = await tx`SELECT * FROM compra WHERE id_pedido = ${id}`;
+        return res.status(409).json({
+          status: 'ERROR',
+          message: 'El pedido ya tiene una compra registrada',
+          data: ya[0]
+        });
+      }
+
+      // 3.b) Resolver id de estado "en_preparacion" si existe tabla 'estado'
+      let idEstadoNuevo = null;
+      try {
+        const e = await tx`SELECT id_estado FROM estado WHERE LOWER(nombre) = 'en_preparacion' LIMIT 1`;
+        if (e.length > 0) idEstadoNuevo = e[0].id_estado;
+      } catch (_) {}
+
+      // 3.c) Actualizar estado (string + FK si existe 'estado_actual')
+      if (idEstadoNuevo !== null) {
+        try {
+          await tx`
+            UPDATE pedidos
+            SET estado = 'en_preparacion', estado_actual = ${idEstadoNuevo}
+            WHERE id_pedido = ${id};`;
+        } catch (_) {
+          await tx`UPDATE pedidos SET estado = 'en_preparacion' WHERE id_pedido = ${id};`;
+        }
+        // Historial (si existe tabla estado_pedido)
+        try {
+          await tx`
+            INSERT INTO estado_pedido (id_pedido, id_estado, fecha_hora)
+            VALUES (${id}, ${idEstadoNuevo}, NOW());`;
+        } catch (_) {}
+      } else {
+        // Sin tabla estado: al menos actualizamos el string si existe
+        try { await tx`UPDATE pedidos SET estado = 'en_preparacion' WHERE id_pedido = ${id};`; } catch (_) {}
+      }
+
+      const [pedidoActualizado] = await tx`SELECT * FROM pedidos WHERE id_pedido = ${id}`;
+      return res.json({
+        status: 'OK',
+        message: 'Pago confirmado',
+        data: {
+          pedido: pedidoActualizado,
+          compra: compraInsert[0],
+          metodo_pago: mp
+        }
+      });
+    });
+  } catch (error) {
+    console.error('Error al confirmar pago:', error);
+    return res.status(500).json({ status: 'ERROR', message: 'Error al confirmar pago', error: error.message });
+  }
+};

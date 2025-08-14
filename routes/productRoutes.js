@@ -17,7 +17,6 @@ router.get('/productos/:id', getProductById);
 router.post('/productos', createProduct);
 router.put('/productos/:id', updateProduct);
 router.delete('/productos/:id', deleteProduct);
-
 // Productos por categoría (usando id_categoria)
 router.get('/productos/categoria/:id_categoria', getProductosPorCategoria);
 

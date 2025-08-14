@@ -4,7 +4,10 @@ import sql from '../services/dbSupabase.js'
 export const getProducts = async (req, res) => {
   try {
     const productos = await sql`SELECT * FROM productos`
-    res.status(200).json(productos)
+    res.json({
+       status: 'OK',
+       data: [productos]
+    })
   } catch (error) {
     console.error('Error al obtener productos:', error.message)
     res.status(500).json({ error: 'Error interno del servidor' })
@@ -18,8 +21,11 @@ export const getProductById = async (req, res) => {
     const [producto] = await sql`SELECT * FROM productos WHERE id_producto = ${id}`
     if (!producto) {
       return res.status(404).json({ error: 'Producto no encontrado' })
-    }
-    res.status(200).json(producto)
+    }    
+    res.json({
+       status: 'OK',
+       data: [producto]
+    })
   } catch (error) {
     console.error('Error al obtener producto por ID:', error.message)
     res.status(500).json({ error: 'Error interno del servidor' })
@@ -31,11 +37,14 @@ export const createProduct = async (req, res) => {
   const { nombre, descripcion, precio_base, id_categoria, disponible = true } = req.body
   try {
     const [nuevoProducto] = await sql`
-      INSERT INTO productos (nombre, descripcion, precio_base, categoria, disponible)
+      INSERT INTO productos (nombre, descripcion, precio_base, id_categoria, disponible)
       VALUES (${nombre}, ${descripcion}, ${precio_base}, ${id_categoria}, ${disponible})
       RETURNING *
     `
-    res.status(201).json(nuevoProducto)
+    res.json({
+       status: 'OK - Creado',
+       data: [nuevoProducto]
+    })
   } catch (error) {
     console.error('Error al crear producto:', error.message)
     res.status(500).json({ error: 'Error interno del servidor' })
@@ -62,7 +71,10 @@ export const updateProduct = async (req, res) => {
       WHERE id_producto = ${id}
       RETURNING *
     `
-    res.status(200).json(productoActualizado)
+    res.json({
+       status: 'OK - Actualizado',
+       data: [productoActualizado]
+    })
   } catch (error) {
     console.error('Error al actualizar producto:', error.message)
     res.status(500).json({ error: 'Error interno del servidor' })
@@ -79,7 +91,10 @@ export const deleteProduct = async (req, res) => {
     }
 
     await sql`DELETE FROM productos WHERE id_producto = ${id}`
-    res.status(200).json({ mensaje: 'Producto eliminado correctamente' })
+    res.json({
+       status: 'OK - Producto Eliminado Correctamente',
+       data: [producto]
+    })
   } catch (error) {
     console.error('Error al eliminar producto:', error.message)
     res.status(500).json({ error: 'Error interno del servidor' })
