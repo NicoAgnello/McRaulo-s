@@ -343,31 +343,114 @@ export const updateEstadoPedido = async (req, res) => {
 };
 
 
-// 5. Eliminar un pedido (-)
+// 5. Eliminar un pedido 
 export const deletePedido = async (req, res) => {
-  const { id } = req.params
+  const { id } = req.params;
+
   try {
-    const pedido = await sql`SELECT * FROM pedidos WHERE id_pedido = ${id};`
-    if (pedido.length === 0) return res.status(404).json({ status: 'ERROR', message: `Pedido con ID ${id} no existe` })
+    const pedRows = await sql`SELECT id_pedido, estado FROM pedidos WHERE id_pedido = ${id};`;
+    if (pedRows.length === 0) {
+      return res.status(404).json({ status: 'ERROR', message: `Pedido con ID ${id} no existe` });
+    }
+    if (pedRows[0].estado === 'entregado') {
+      return res.status(400).json({ status: 'ERROR', message: 'No se puede eliminar un pedido entregado. Cancélalo primero.' });
+    }
 
-    return await sql.begin(async (sql) => {
-      const pedidosProductos = await sql`
-        SELECT id_pedido_producto FROM pedidos_productos WHERE id_pedido = ${id};
-      `
+    await sql.begin(async (tx) => {
+      // compra (si existe)
+      try { await tx`DELETE FROM compra WHERE id_pedido = ${id};`; } catch (_) {}
 
-      for (const pp of pedidosProductos) {
-        await sql`DELETE FROM pedidos_productos_ingredientes WHERE id_pedido_producto = ${pp.id_pedido_producto};`
+      // historial de estados (si existe)
+      try { await tx`DELETE FROM estado_pedido WHERE id_pedido = ${id};`; } catch (_) {}
+
+      // ingredientes de todas las líneas del pedido
+      await tx`
+        DELETE FROM pedidos_productos_ingredientes
+        WHERE id_pedido_producto IN (
+          SELECT id_pedido_producto FROM pedidos_productos WHERE id_pedido = ${id}
+        );
+      `;
+
+      // líneas del pedido
+      await tx`DELETE FROM pedidos_productos WHERE id_pedido = ${id};`;
+
+      // pedido
+      const [deleted] = await tx`DELETE FROM pedidos WHERE id_pedido = ${id} RETURNING *;`;
+
+      return res.json({
+        status: 'OK',
+        message: `Pedido ${id} eliminado correctamente`,
+        data: deleted
+      });
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ status: 'ERROR', message: `Error al eliminar pedido ${id}`, error: error.message });
+  }
+};
+
+// PATCH /api/pedidos/:id/cancelar
+export const cancelarPedido = async (req, res) => {
+  const { id } = req.params;
+  const { motivo } = req.body || {};
+
+  try {
+    const pedRows = await sql`SELECT * FROM pedidos WHERE id_pedido = ${id};`;
+    if (pedRows.length === 0) {
+      return res.status(404).json({ status: 'ERROR', message: `Pedido ${id} no existe` });
+    }
+    const pedido = pedRows[0];
+
+    if (pedido.estado === 'cancelado') {
+      return res.status(409).json({ status: 'ERROR', message: 'El pedido ya está cancelado' });
+    }
+    if (pedido.estado === 'entregado') {
+      return res.status(400).json({ status: 'ERROR', message: 'No se puede cancelar un pedido entregado' });
+    }
+
+    await sql.begin(async (tx) => {
+      // intentar usar tabla de estados para estado_actual
+      let idEstadoCancelado = null;
+      try {
+        const e = await tx`SELECT id_estado FROM estado WHERE LOWER(nombre)=LOWER('cancelado') LIMIT 1;`;
+        if (e.length > 0) idEstadoCancelado = e[0].id_estado;
+      } catch (_) {}
+
+      if (idEstadoCancelado !== null) {
+        try {
+          await tx`
+            UPDATE pedidos
+            SET estado = 'cancelado', estado_actual = ${idEstadoCancelado}
+            WHERE id_pedido = ${id};
+          `;
+        } catch (_) {
+          await tx`UPDATE pedidos SET estado = 'cancelado' WHERE id_pedido = ${id};`;
+        }
+        try {
+          await tx`
+            INSERT INTO estado_pedido (id_pedido, id_estado, fecha_hora, motivo)
+            VALUES (${id}, ${idEstadoCancelado}, NOW(), ${motivo || null});
+          `;
+        } catch (_) {}
+      } else {
+        await tx`UPDATE pedidos SET estado = 'cancelado' WHERE id_pedido = ${id};`;
       }
 
-      await sql`DELETE FROM pedidos_productos WHERE id_pedido = ${id};`
-      await sql`DELETE FROM pedidos WHERE id_pedido = ${id};`
+      // si había compra registrada, la quitamos para que no cuente en ventas
+      try { await tx`DELETE FROM compra WHERE id_pedido = ${id};`; } catch (_) {}
+    });
 
-      res.json({ status: 'OK', message: `Pedido ${id} eliminado correctamente` })
-    })
+    // devolver pedido actualizado
+    const [pedidoAct] = await sql`SELECT * FROM pedidos WHERE id_pedido = ${id};`;
+    return res.json({ status: 'OK', message: 'Pedido cancelado', data: pedidoAct });
   } catch (error) {
-    res.status(500).json({ status: 'ERROR', message: `Error al eliminar pedido ${id}`, error: error.message })
+    return res
+      .status(500)
+      .json({ status: 'ERROR', message: `Error al cancelar pedido ${id}`, error: error.message });
   }
-}
+};
+
 
 // 6. Obtener pedidos por estado
 export const getPedidosByEstado = async (req, res) => {
@@ -424,6 +507,56 @@ export const getProductoDetalleEnPedido = async (req, res) => {
     res.status(500).json({ status: 'ERROR', message: `Error al obtener detalle del producto en el pedido`, error: error.message })
   }
 }
+
+// GET /api/pedidos/:idPedido/productos-por-id/:idProducto
+export const getProductosAgrupadosEnPedido = async (req, res) => {
+  const { idPedido, idProducto } = req.params;
+
+  try {
+    const lineas = await sql`
+      SELECT pp.*,
+             p.nombre,
+             p.descripcion,
+             c.nombre AS categoria
+      FROM pedidos_productos pp
+      JOIN productos p ON pp.id_producto = p.id_producto
+      LEFT JOIN categoria c ON p.id_categoria = c.id_categoria
+      WHERE pp.id_pedido = ${idPedido}
+        AND pp.id_producto = ${idProducto}
+      ORDER BY pp.id_pedido_producto;
+    `;
+
+    // Si preferís 200 con [] en lugar de 404, cambialo acá
+    if (lineas.length === 0) {
+      return res.status(404).json({ status: 'ERROR', message: 'No hay líneas con ese producto en el pedido' });
+    }
+
+    const conIngredientes = await Promise.all(
+      lineas.map(async (l) => {
+        const ingredientes = await sql`
+          SELECT ppi.*, i.nombre, i.descripcion, i.unidad_medida
+          FROM pedidos_productos_ingredientes ppi
+          JOIN ingredientes i ON ppi.id_ingrediente = i.id_ingrediente
+          WHERE ppi.id_pedido_producto = ${l.id_pedido_producto};
+        `;
+        return {
+          ...l,
+          ingredientes_extra: ingredientes.filter(i => i.es_extra),
+          ingredientes_removidos: ingredientes.filter(i => !i.es_extra)
+        };
+      })
+    );
+
+    return res.json({ status: 'OK', data: conIngredientes });
+  } catch (error) {
+    return res.status(500).json({
+      status: 'ERROR',
+      message: 'Error al obtener líneas por producto',
+      error: error.message
+    });
+  }
+};
+
 
 // 8. Estadísticas de pedidos
 export const getEstadisticasPedidos = async (req, res) => {
@@ -511,7 +644,7 @@ export const getEstadisticasPedidos = async (req, res) => {
 
 // 9. Agregar producto al pedido
 export const agregarProductosAlPedido = async (req, res) => {
-  const { id } = req.params;
+  const { id } = req.params;            // id_pedido
   const { productos } = req.body;
 
   if (!productos || !Array.isArray(productos) || productos.length === 0) {
@@ -522,91 +655,135 @@ export const agregarProductosAlPedido = async (req, res) => {
   }
 
   try {
-    const pedidoExistente = await sql`
-      SELECT * FROM pedidos WHERE id_pedido = ${id};
+    const pedidoRows = await sql`
+      SELECT id_pedido, estado, total::float AS total
+      FROM pedidos
+      WHERE id_pedido = ${id};
     `;
-    if (pedidoExistente.length === 0) {
-      return res.status(404).json({
-        status: 'ERROR',
-        message: `No se encontró el pedido con ID ${id}`
-      });
+    if (pedidoRows.length === 0) {
+      return res.status(404).json({ status: 'ERROR', message: `No se encontró el pedido con ID ${id}` });
     }
+    const pedido = pedidoRows[0];
 
-    if (['entregado', 'cancelado'].includes(pedidoExistente[0].estado)) {
+    if (['entregado', 'cancelado'].includes(pedido.estado)) {
       return res.status(400).json({
         status: 'ERROR',
-        message: `No se pueden agregar productos a un pedido en estado "${pedidoExistente[0].estado}"`
+        message: `No se pueden agregar productos a un pedido en estado "${pedido.estado}"`
       });
     }
 
-    return await sql.begin(async (sql) => {
+    return await sql.begin(async (tx) => {
       let totalAdicional = 0;
       const productosAgregados = [];
 
-      for (const producto of productos) {
-        const productoInfo = await sql`
-          SELECT * FROM productos
-          WHERE id_producto = ${producto.id_producto}
-            AND disponible = TRUE;
+      for (const prod of productos) {
+        // 1) Traer producto + categoría (permite_extras) y precio_base ya como number
+        const rows = await tx`
+          SELECT p.id_producto, p.nombre, p.precio_base::float AS precio_base,
+                 COALESCE(c.permite_extras, TRUE) AS permite_extras
+          FROM productos p
+          LEFT JOIN categoria c ON c.id_categoria = p.id_categoria
+          WHERE p.id_producto = ${prod.id_producto} AND p.disponible = TRUE;
         `;
-        if (productoInfo.length === 0) {
-          throw new Error(`El producto con ID ${producto.id_producto} no existe o no está disponible`);
+        if (rows.length === 0) {
+          return res.status(400).json({
+            status: 'ERROR',
+            message: `Producto ${prod.id_producto} inexistente o no disponible`
+          });
+        }
+        const p = rows[0];
+
+        // 2) Normalizar/validar la lista de personalizaciones
+        const lista = Array.isArray(prod.ingredientes_personalizados)
+          ? prod.ingredientes_personalizados
+          : [];
+
+        for (const ing of lista) {
+          if (typeof ing.id_ingrediente !== 'number') {
+            return res.status(400).json({
+              status: 'ERROR',
+              message: `Falta id_ingrediente en una personalización de "${p.nombre}"`
+            });
+          }
+          if (typeof ing.cantidad !== 'number' || ing.cantidad <= 0) {
+            return res.status(400).json({
+              status: 'ERROR',
+              message: `La cantidad debe ser > 0 para el ingrediente ${ing.id_ingrediente} en "${p.nombre}"`
+            });
+          }
+          if (typeof ing.es_extra !== 'boolean') ing.es_extra = !!ing.es_extra;
         }
 
-        // parseFloat directamente sobre precio_base
-        let subtotal = parseFloat(productoInfo[0].precio_base);
+        // 3) Bloquear extras si la categoría no los permite
+        const hayExtras = lista.some(i => i.es_extra && i.cantidad > 0);
+        if (p.permite_extras === false && hayExtras) {
+          return res.status(400).json({
+            status: 'ERROR',
+            message: `El producto "${p.nombre}" no admite extras`
+          });
+        }
 
-        if (Array.isArray(producto.ingredientes_personalizados)) {
-          for (const ing of producto.ingredientes_personalizados) {
-            const ingredienteInfo = await sql`
-              SELECT * FROM ingredientes
-              WHERE id_ingrediente = ${ing.id_ingrediente};
-            `;
-            if (ingredienteInfo.length === 0) {
-              throw new Error(`El ingrediente con ID ${ing.id_ingrediente} no existe`);
-            }
-
-            if (ing.es_extra && ing.cantidad > 0) {
-              // parseFloat directamente sobre precio de ingrediente
-              const precioIng = parseFloat(ingredienteInfo[0].precio);
-              subtotal += precioIng * ing.cantidad;
+        // 4) Validar remociones contra receta base
+        if (lista.some(i => !i.es_extra)) {
+          const baseRows = await tx`
+            SELECT id_ingrediente
+            FROM productos_ingredientes_base
+            WHERE id_producto = ${p.id_producto};
+          `;
+          const baseSet = new Set(baseRows.map(r => r.id_ingrediente));
+          for (const ing of lista) {
+            if (!ing.es_extra && !baseSet.has(ing.id_ingrediente)) {
+              return res.status(400).json({
+                status: 'ERROR',
+                message: `No se puede remover el ingrediente ${ing.id_ingrediente} en "${p.nombre}" porque no está en la receta base`
+              });
             }
           }
+        }
+
+        // 5) Calcular subtotal = precio_base + sum(precio_extra * cantidad)
+        let subtotal = p.precio_base;
+        for (const ing of lista) {
+          if (!ing.es_extra) continue; // las remociones no descuentan (tu lógica actual)
+          const ingRows = await tx`
+            SELECT precio::float AS precio
+            FROM ingredientes
+            WHERE id_ingrediente = ${ing.id_ingrediente};
+          `;
+          if (ingRows.length === 0) {
+            return res.status(400).json({
+              status: 'ERROR',
+              message: `Ingrediente ${ing.id_ingrediente} inexistente`
+            });
+          }
+          subtotal += ingRows[0].precio * ing.cantidad;
         }
 
         totalAdicional += subtotal;
 
-        const nuevoPedidoProducto = await sql`
-          INSERT INTO pedidos_productos
-            (id_pedido, id_producto, subtotal, notas)
-          VALUES
-            (${id}, ${producto.id_producto}, ${subtotal}, ${producto.notas || null})
+        // 6) Insertar línea de pedido
+        const [pp] = await tx`
+          INSERT INTO pedidos_productos (id_pedido, id_producto, subtotal, notas)
+          VALUES (${id}, ${p.id_producto}, ${subtotal}, ${prod.notas || null})
           RETURNING *;
         `;
-        productosAgregados.push(nuevoPedidoProducto[0]);
+        productosAgregados.push(pp);
 
-        if (Array.isArray(producto.ingredientes_personalizados)) {
-          for (const ing of producto.ingredientes_personalizados) {
-            await sql`
-              INSERT INTO pedidos_productos_ingredientes
-                (id_pedido_producto, id_ingrediente, cantidad, es_extra)
-              VALUES
-                (${nuevoPedidoProducto[0].id_pedido_producto},
-                 ${ing.id_ingrediente},
-                 ${ing.cantidad},
-                 ${ing.es_extra});
-            `;
-          }
+        // 7) Insertar personalizaciones de la línea
+        for (const ing of lista) {
+          await tx`
+            INSERT INTO pedidos_productos_ingredientes
+              (id_pedido_producto, id_ingrediente, cantidad, es_extra)
+            VALUES
+              (${pp.id_pedido_producto}, ${ing.id_ingrediente}, ${ing.cantidad}, ${ing.es_extra});
+          `;
         }
       }
 
-      // parseFloat sobre total anterior
-      const totalActual = parseFloat(pedidoExistente[0].total);
-      const nuevoTotal  = totalActual + totalAdicional;
-
-      const pedidoActualizado = await sql`
-        UPDATE pedidos
-        SET total = ${nuevoTotal}
+      // 8) Actualizar total del pedido
+      const nuevoTotal = (Number.isFinite(pedido.total) ? pedido.total : 0) + totalAdicional;
+      const [pedidoActualizado] = await tx`
+        UPDATE pedidos SET total = ${nuevoTotal}
         WHERE id_pedido = ${id}
         RETURNING *;
       `;
@@ -615,7 +792,7 @@ export const agregarProductosAlPedido = async (req, res) => {
         status: 'OK',
         message: 'Productos agregados correctamente al pedido',
         data: {
-          pedido: pedidoActualizado[0],
+          pedido: pedidoActualizado,
           productos_agregados: productosAgregados,
           total_adicional: totalAdicional
         }
@@ -623,14 +800,13 @@ export const agregarProductosAlPedido = async (req, res) => {
     });
   } catch (error) {
     console.error('Error al agregar productos al pedido:', error);
-    res.status(500).json({
+    return res.status(500).json({
       status: 'ERROR',
       message: 'Error al agregar productos al pedido',
       error: error.message
     });
   }
 };
-
 
 // 10. Filtrar pedidos por rango de fechas
 export const filtrarPedidosPorFecha = async (req, res) => {

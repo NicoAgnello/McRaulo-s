@@ -2,6 +2,7 @@ import express from 'express';
 import {
   getProducts,
   getProductById,
+  getRecetaDeProducto,
   createProduct,
   updateProduct,
   deleteProduct,
@@ -22,5 +23,8 @@ router.get('/productos/categoria/:id_categoria', getProductosPorCategoria);
 
 // Calcular precio personalizado
 router.post('/productos/:id/calcular-precio', calcularPrecioPersonalizado);
+
+//Receta de producto
+router.get('/productos/:id/receta', getRecetaDeProducto);
 
 export default router;

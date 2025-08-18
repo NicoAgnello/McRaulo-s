@@ -32,6 +32,51 @@ export const getProductById = async (req, res) => {
   }
 }
 
+// Obtener los ingredientes base (receta) de un producto
+export const getRecetaDeProducto = async (req, res) => {
+  const { id } = req.params;
+
+  const idNum = Number(id);
+  if (!Number.isInteger(idNum) || idNum <= 0) {
+    return res.status(400).json({
+      status: 'ERROR',
+      message: 'id de producto inválido (debe ser un entero positivo)'
+    });
+  }
+
+  try {
+    // Validar que el producto exista
+    const prod = await sql`SELECT 1 FROM productos WHERE id_producto = ${idNum} LIMIT 1;`;
+    if (prod.length === 0) {
+      return res.status(404).json({ status: 'ERROR', message: `Producto ${idNum} no existe` });
+    }
+
+    // Traer receta base
+    const receta = await sql`
+      SELECT 
+        pib.id_producto,
+        pib.id_ingrediente,
+        i.nombre,
+        i.descripcion,
+        i.unidad_medida
+      FROM productos_ingredientes_base pib
+      JOIN ingredientes i ON i.id_ingrediente = pib.id_ingrediente
+      WHERE pib.id_producto = ${idNum}
+      ORDER BY i.nombre;
+    `;
+
+    // Si el producto existe pero no tiene receta cargada, devolvemos []
+    return res.json({ status: 'OK', data: receta });
+  } catch (error) {
+    return res.status(500).json({
+      status: 'ERROR',
+      message: `Error al obtener ingredientes base del producto ${idNum}`,
+      error: error.message
+    });
+  }
+};
+
+
 // Crear un nuevo producto
 export const createProduct = async (req, res) => {
   const { nombre, descripcion, precio_base, id_categoria, disponible = true } = req.body
@@ -100,25 +145,42 @@ export const deleteProduct = async (req, res) => {
     res.status(500).json({ error: 'Error interno del servidor' })
   }
 }
-//Obtener productos por categoria
+
+// Obtener productos por id_categoria (incluye nombre de la categoría)
 export const getProductosPorCategoria = async (req, res) => {
-  const { id_categoria } = req.params
-  try {
-    const productos = await sql`
-      SELECT * FROM productos
-      WHERE id_categoria = ${id_categoria} AND disponible = TRUE
-      ORDER BY nombre;
-    `
-    res.json({ status: 'OK', data: productos })
-  } catch (error) {
-    console.error(`Error al obtener productos de categoría ${id_categoria}:`, error)
-    res.status(500).json({
+  const { id_categoria } = req.params;
+
+  // Validación básica del parámetro
+  const id = Number(id_categoria);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({
       status: 'ERROR',
-      message: `Error al obtener productos de categoría ${id_categoria}`,
-      error: error.message
-    })
+      message: 'id_categoria inválido (debe ser un entero positivo)'
+    });
   }
-}
+
+  try {
+    const rows = await sql`
+      SELECT 
+        p.*,
+        c.nombre AS categoria
+      FROM productos p
+      JOIN categoria c ON c.id_categoria = p.id_categoria
+      WHERE p.id_categoria = ${id} AND p.disponible = TRUE
+      ORDER BY p.id_producto;
+    `;
+
+    return res.json({ status: 'OK', data: rows });
+  } catch (error) {
+    console.error('Error al obtener productos por categoría:', error);
+    return res.status(500).json({
+      status: 'ERROR',
+      message: 'Error al obtener productos por categoría',
+      error: error.message
+    });
+  }
+};
+
 
 
 //Calcular precio

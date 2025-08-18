@@ -5,8 +5,10 @@ import {
   createPedido,
   updateEstadoPedido,
   deletePedido,
+  cancelarPedido,
   getPedidosByEstado,
   getProductoDetalleEnPedido,
+  getProductosAgrupadosEnPedido,
   getEstadisticasPedidos,
   agregarProductosAlPedido,
   filtrarPedidosPorFecha,
@@ -23,8 +25,10 @@ router.get('/:id', getPedidoById)
 router.post('/', createPedido)
 router.patch('/:id/estado', updateEstadoPedido)
 router.delete('/:id', deletePedido)
+router.delete('/:id/cancelar', cancelarPedido)
 router.get('/estado/:estado', getPedidosByEstado)
 router.get('/:idPedido/productos/:idPedidoProducto', getProductoDetalleEnPedido)
+router.get('/:idPedido/productos-por-id/:idProducto', getProductosAgrupadosEnPedido); 
 router.get('/estadisticas/resumen', getEstadisticasPedidos)
 router.post('/:id/productos', agregarProductosAlPedido)
 router.get('/filtro/fecha', filtrarPedidosPorFecha)
