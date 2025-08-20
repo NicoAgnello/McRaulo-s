@@ -5,8 +5,8 @@ export const getProducts = async (req, res) => {
   try {
     const productos = await sql`SELECT * FROM productos`
     res.json({
-       status: 'OK',
-       data: [productos]
+      status: 'OK',
+      data: [productos]
     })
   } catch (error) {
     console.error('Error al obtener productos:', error.message)
