@@ -56,9 +56,11 @@ export const getRecetaDeProducto = async (req, res) => {
       SELECT 
         pib.id_producto,
         pib.id_ingrediente,
+        pib.cantidad,                    
         i.nombre,
         i.descripcion,
-        i.unidad_medida
+        i.unidad_medida,
+        i.precio                         
       FROM productos_ingredientes_base pib
       JOIN ingredientes i ON i.id_ingrediente = pib.id_ingrediente
       WHERE pib.id_producto = ${idNum}
@@ -189,61 +191,100 @@ export const calcularPrecioPersonalizado = async (req, res) => {
   const { ingredientes_personalizados } = req.body;
 
   try {
-    const productoResult = await sql`
-      SELECT * FROM productos
-      WHERE id_producto = ${id} AND disponible = TRUE;
+    // 1) Producto
+    const productoRows = await sql`
+      SELECT nombre, precio_base
+      FROM productos
+      WHERE id_producto = ${id} AND disponible = TRUE
+      LIMIT 1;
     `;
-    if (productoResult.length === 0) {
-      return res
-        .status(404)
-        .json({ status: 'ERROR', message: `Producto con ID ${id} no encontrado` });
+    if (productoRows.length === 0) {
+      return res.status(404).json({ status: 'ERROR', message: `Producto con ID ${id} no encontrado` });
     }
+    const producto = productoRows[0];
+    const basePrice = Number(producto.precio_base) || 0;
 
-    const producto = productoResult[0];
-    // Convertir precio_base a número
-    const basePrice = parseFloat(producto.precio_base);
     let precioTotal = basePrice;
-    const detallePrecios = [
-      {
-        concepto: 'Precio base',
-        precio: basePrice
-      }
-    ];
+    const detallePrecios = [{ concepto: 'Precio base', precio: basePrice }];
 
-    if (Array.isArray(ingredientes_personalizados)) {
-      for (const ingrediente of ingredientes_personalizados) {
-        // Solo procesar extras con cantidad positiva
-        if (ingrediente.es_extra && ingrediente.cantidad > 0) {
-          const ingredienteInfo = await sql`
-            SELECT * FROM ingredientes
-            WHERE id_ingrediente = ${ingrediente.id_ingrediente};
-          `;
-          if (ingredienteInfo.length > 0) {
-            const precioIngrediente = parseFloat(ingredienteInfo[0].precio);
-            const costoExtra = precioIngrediente * ingrediente.cantidad;
-            precioTotal += costoExtra;
-            detallePrecios.push({
-              concepto: `Extra ${ingredienteInfo[0].nombre} (${ingrediente.cantidad} ${ingredienteInfo[0].unidad_medida})`,
-              precio: costoExtra
-            });
-          }
-        }
-      }
+    // 2) Sin personalizaciones → devolvemos precio base
+    if (!Array.isArray(ingredientes_personalizados) || ingredientes_personalizados.length === 0) {
+      return res.json({
+        status: 'OK',
+        data: { producto: producto.nombre, precio_total: Number(precioTotal.toFixed(2)), detalle_precios: detallePrecios }
+      });
     }
 
-    res.json({
+    // 3) Procesar cada item de personalización
+    for (const ing of ingredientes_personalizados) {
+      const idIng = Number(ing?.id_ingrediente);
+      const esExtra = Boolean(ing?.es_extra);
+      const cantSolicitada = Number(ing?.cantidad);
+
+      // Sanitizar ID
+      if (!Number.isFinite(idIng) || idIng <= 0) continue;
+
+      // Remover base: en tu negocio NO descuenta
+      if (!esExtra) continue;
+
+      // Solo extras con cantidad positiva
+      if (!Number.isFinite(cantSolicitada) || cantSolicitada <= 0) continue;
+
+      // 4) Traer datos del ingrediente (incluye porcion_extra/max_porciones_extra)
+      const rows = await sql`
+        SELECT nombre, unidad_medida, precio, porcion_extra, max_porciones_extra
+        FROM ingredientes
+        WHERE id_ingrediente = ${idIng}
+        LIMIT 1;
+      `;
+      if (rows.length === 0) continue;
+      const info = rows[0];
+
+      const precioUnidad = Number(info.precio) || 0;
+      const porcion = Number(info.porcion_extra) || 0;
+      const maxPorciones = Number(info.max_porciones_extra) || 0;
+
+      // 5) Validar que el ingrediente admita extras
+      if (!(porcion > 0 && maxPorciones > 0)) {
+        // si no admite extras, lo ignoramos (o podrías devolver 400)
+        continue;
+      }
+
+      // 6) Normalizar cantidad → porciones enteras y clamp al máximo
+      const porcionesExactas = cantSolicitada / porcion;        // ej: 25g / 10g = 2.5
+      let porciones = Math.floor(porcionesExactas);             // 2
+      porciones = Math.min(Math.max(porciones, 0), maxPorciones); // clamp 0..max
+
+      if (porciones <= 0) continue;
+
+      const cantidadNormalizada = porciones * porcion; // vuelve a g/ml/u
+
+      // 7) Costo = precio unidad * cantidad normalizada
+      const costoExtra = precioUnidad * cantidadNormalizada;
+      precioTotal += costoExtra;
+
+      detallePrecios.push({
+        concepto: `Extra ${info.nombre} (${porciones} porción${porciones > 1 ? 'es' : ''} × ${porcion} ${info.unidad_medida})`,
+        precio: Number(costoExtra.toFixed(2))
+      });
+    }
+
+    return res.json({
       status: 'OK',
       data: {
         producto: producto.nombre,
-        precio_total: precioTotal,
+        precio_total: Number(precioTotal.toFixed(2)),
         detalle_precios: detallePrecios
       }
     });
   } catch (error) {
     console.error('Error al calcular precio personalizado:', error);
-    res
-      .status(500)
-      .json({ status: 'ERROR', message: 'Error al calcular precio del producto', error: error.message });
+    return res.status(500).json({
+      status: 'ERROR',
+      message: 'Error al calcular precio del producto',
+      error: error.message
+    });
   }
 };
+
 
