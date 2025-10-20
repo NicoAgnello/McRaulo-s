@@ -15,7 +15,8 @@ import {
   obtenerResumenPedido,
   eliminarProductoDePedido,
   getPedidosPorMetodoPago,
-  getPedidosByCliente 
+  getPedidosByCliente,
+  confirmarPago 
 } from '../controllers/pedidosController.js'
 
 const router = Router()
@@ -36,5 +37,6 @@ router.get('/:id/resumen', obtenerResumenPedido)
 router.delete('/:id/productos/:idProducto', eliminarProductoDePedido)
 router.get('/metodo-pago/:metodo', getPedidosPorMetodoPago)
 router.get('/cliente/:idCliente', getPedidosByCliente)
+router.post("/:id/confirmar-pago", confirmarPago);
 
 export default router

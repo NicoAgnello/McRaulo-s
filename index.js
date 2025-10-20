@@ -6,6 +6,7 @@ import productRoutes from './routes/productRoutes.js';
 import pedidoRoutes from './routes/pedidosRoutes.js'
 import ingredienteRoutes from './routes/ingredientesRoutes.js'
 import categoriaRoutes from './routes/categoriaRoutes.js'
+import clientesRoutes from "./routes/clientesRoutes.js";
 
 
 const app = express();
@@ -19,6 +20,8 @@ app.use('/api', productRoutes);
 app.use('/api/pedidos', pedidoRoutes)
 app.use('/api/ingredientes', ingredienteRoutes)
 app.use('/api/categorias', categoriaRoutes)
+app.use("/api/clientes", clientesRoutes);
+
 // Ruta base
 app.get('/', (req, res) => {
   res.send('API PP1-BURGER funcionando!');
