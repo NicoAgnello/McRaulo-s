@@ -7,6 +7,8 @@ import pedidoRoutes from './routes/pedidosRoutes.js'
 import ingredienteRoutes from './routes/ingredientesRoutes.js'
 import categoriaRoutes from './routes/categoriaRoutes.js'
 import clientesRoutes from "./routes/clientesRoutes.js";
+import cuponRoutes from './routes/cuponRoutes.js'
+
 
 
 const app = express();
@@ -21,6 +23,7 @@ app.use('/api/pedidos', pedidoRoutes)
 app.use('/api/ingredientes', ingredienteRoutes)
 app.use('/api/categorias', categoriaRoutes)
 app.use("/api/clientes", clientesRoutes);
+app.use('/api/cupon', cuponRoutes)
 
 // Ruta base
 app.get('/', (req, res) => {
