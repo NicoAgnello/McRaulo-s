@@ -1284,7 +1284,6 @@ export const getPedidosByCliente = async (req, res) => {
 
 // Confirmar pago de un pedido (tarjeta / mercadopago)
 // POST /api/pedidos/:id/confirmar-pago
-// controllers/pedidosController.js
 export const confirmarPago = async (req, res) => {
   const { id } = req.params; // id_pedido
   const { metodo_pago, id_metodo_pago } = req.body;
@@ -1439,6 +1438,49 @@ export const confirmarPago = async (req, res) => {
     return res.status(500).json({
       status: "ERROR",
       message: "Error al confirmar pago",
+      error: error.message,
+    });
+  }
+};
+
+// GET /api/pedidos/:id/puntos
+export const getPuntosGanadosEnPedido = async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Traigo pedido + cliente + sumatoria de puntos del movimiento de ese pedido
+    const rows = await sql/*sql*/`
+      SELECT
+        p.id_pedido,
+        p.id_cliente,
+        c.dni,
+        COALESCE(SUM(mp.puntos), 0) AS puntos_ganados
+      FROM pedidos p
+      JOIN clientes c       ON c.id_cliente = p.id_cliente
+      LEFT JOIN mov_puntos mp ON mp.id_pedido = p.id_pedido AND mp.tipo = 'suma'
+      WHERE p.id_pedido = ${id}
+      GROUP BY p.id_pedido, p.id_cliente, c.dni
+      LIMIT 1;
+    `;
+
+    if (rows.length === 0) {
+      return res.status(404).json({ status: "ERROR", message: `Pedido ${id} no existe` });
+    }
+
+    const { id_cliente, dni, puntos_ganados } = rows[0];
+    const esGenerico = Number(id_cliente) === 1 || String(dni) === "00000001";
+
+    return res.json({
+      status: "OK",
+      data: {
+        cliente: id_cliente,
+        puntos_ganados: esGenerico ? 0 : Number(puntos_ganados),
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({
+      status: "ERROR",
+      message: "Error al obtener puntos del pedido",
       error: error.message,
     });
   }
